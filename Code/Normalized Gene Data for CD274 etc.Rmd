@@ -1,0 +1,513 @@
+---
+title: "Normalized Gene Data for CD274 etc"
+output: html_document
+date: "2025-09-03"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#**ACRG Data processing**
+```{r}
+library(hgu133plus2.db)
+library(GEOquery)
+library(org.Hs.eg.db)
+library(dplyr)
+library(stringr)
+library(preprocessCore)
+library(AnnotationDbi)
+library(BiocManager)
+```
+
+These data are RMA normalized and log10 transformed. 
+I will reverse log10 transform and log2 transform the data. 
+```{r}
+#ACRG Data
+options(timeout=100)
+data_ACRG = getGEO('GSE62254')
+```
+```{r}
+edata_ACRG = as.data.frame(data_ACRG[["GSE62254_series_matrix.txt.gz"]]@assayData[["exprs"]])  
+pheno_ACRG = as.data.frame(data_ACRG[["GSE62254_series_matrix.txt.gz"]]@phenoData@data)
+fdata_ACRG = as.data.frame(data_ACRG[["GSE62254_series_matrix.txt.gz"]]@featureData@data)
+```
+
+#Annotate 
+```{r}
+annotatedACRG = AnnotationDbi::select(hgu133plus2.db,keys,keys = as.character(fdata_ACRG$ID), columns = c("SYMBOL","ENTREZID","ENSEMBL"), keytype = "PROBEID")
+```
+
+```{r}
+edata_ACRG = edata_ACRG %>% tibble::rownames_to_column("PROBEID") # Make the first column the row name
+```
+
+```{r}
+edata_ACRG = merge(annotatedACRG, edata_ACRG, by.x="PROBEID") #Merge so that SYMBOL is allocated to probes
+edata_ACRG = dplyr::select(edata_ACRG, -c("ENTREZID","ENSEMBL","PROBEID")) #Remove ENTREZID, PROBEID and ENSEMBL
+```
+
+Check for NAs after switching to Gene SYMBOL
+```{r}
+table(is.na(edata_ACRG$SYMBOL))
+```
+```{r}
+edata_ACRG = edata_ACRG[!is.na(edata_ACRG$SYMBOL),]
+```
+
+## Check for duplicates
+```{r}
+table(duplicated(edata_ACRG$SYMBOL))
+```
+```{r}
+#Aggregate duplicate genes by mean
+edata_ACRG %>% group_by(SYMBOL) %>% summarise_all(mean) %>% data.frame() -> edata_ACRG_merged
+edata_ACRG = edata_ACRG_merged
+ #Aggregate and mean duplicate SYMBOLS 
+```
+
+
+```{r}
+edata_ACRG = data.frame(edata_ACRG, row.names = "SYMBOL")
+```
+```{r}
+table(is.na(edata_ACRG))
+#No NA
+
+edata_ACRG = 10^(edata_ACRG) #reverse the log10 transform from GEO
+
+```
+
+
+#Now that we have our dataset lets look at our expression data distribution. Do we need to normalize? Do we have outliers?
+
+Boxplot
+```{r}
+# Look at data that is not transformed vs transformed
+par(mfrow=c(1,2))
+boxplot(edata_ACRG, col=2, range=0)
+boxplot(log2(edata_ACRG+1), col=2, range=0)
+```
+Histogram
+```{r}
+par(mfrow=c(1,2))
+hist(edata_ACRG[,1],col=2)
+hist(log2(edata_ACRG[,1]+1),col=3)
+```
+
+Density Plot
+```{r}
+par(mfrow=c(1,2))
+omit = na.omit(edata_ACRG)
+plot(density(edata_ACRG[,1]),col=2)
+lines(density(edata_ACRG[,2]),col=3)
+plot(density(log2(edata_ACRG[,1]+1)),col=2)
+lines(density(log2(edata_ACRG[,2]+1)),col=3)
+```
+qqPlot
+```{r}
+par(mfrow=c(1,2))
+qqplot(edata_ACRG[,1], edata_ACRG[,2],col=3)
+qqplot(log2(edata_ACRG[,1]+1), log2(edata_ACRG[,2]+1),col=3)
+```
+
+Bland Altman Plot
+```{r}
+# Bland Altman Plot
+mm = edata_ACRG[,1] - edata_ACRG[,2]
+aa = edata_ACRG[,1] + edata_ACRG[,2]
+plot(aa,mm,col=2) 
+```
+Let's reassess after a log2 transform 
+```{r}
+# Bland Altman Plot
+mm = log2(edata_ACRG[,1]+1) - log2(edata_ACRG[,2]+1)
+aa = log2(edata_ACRG[,1]+1) + log2(edata_ACRG[,2]+1)
+plot(aa,mm,col=2) 
+```
+##Transform data by log2 based on exploratory data analysis. 
+```{r}
+log_ACRG = log2(edata_ACRG+1)
+```
+
+## Here we will remove low abundance genes because we know that concordance between nanostring and microarray or rnaseq platforms is best with higher abudnant, high dynamic range and more varaiable genes (Kwing et al. Biological Validation of RNA Sequencing Data From Formalin-Fixed Paraffin-Embedded Primary Melanomas, Richard et al. Comparison of gene expression microarray data with count-based RNA measurements informs microarray interpretation, Illumina. RNA-Seq Offers Significant Advantages in Immuno-Oncology Research)
+```{r}
+log_ACRG = as.data.frame(log_ACRG)
+
+
+
+#Check for low expression genes 
+median_ACRG = rowMedians(as.matrix(log_ACRG))
+hist(median_ACRG, breaks = 200)
+#Can see peak and then levels off 
+
+#Get a better look for a cut-off
+hist(median_ACRG, breaks = 200, xlim = c(1,4), ylim = c(0,250))
+abline(v=3, lwd=3)
+
+#Full dataset view. 
+hist(median_ACRG, breaks = 200, ylim = c(0,250))
+abline(v=3, lwd=3)
+
+#Remove low abundance genes
+
+#Remove low expression genes
+median_ACRG = as.data.frame(median_ACRG)
+median_ACRG = median_ACRG > 3
+log_ACRG = log_ACRG[median_ACRG,]
+#Removed 742 genes. 
+
+#Check if quantile normalization is required.
+colramp = colorRampPalette(c(3,"white",2))(20)
+plot(density(log_ACRG[,1]),col=colramp[1],lwd=1,ylim=c(0,.20))
+for(i in 2:200){lines(density(log_ACRG[,i]),lwd=1,col=colramp[i])}
+#In the plot we can see that quantile normalization will aid in the data analysis
+```
+
+#**TCGA Processing**
+
+
+#Load Data
+```{r}
+#Download zip files from https://github.com/skubleny/Integrated-Molecular-Classification-GC/tree/main/Datainto directory and unzip to .csv files. Import from working directory as:
+
+setwd("~/Documents/Research/Integrated molecular classification of gastric cancer/R Code/")
+
+edata_1 = read.csv("data_RNA_Seq_v2_expression_median_ENTREZUPDATED_sheet1.csv")
+edata_2 = read.csv("data_RNA_Seq_v2_expression_median_ENTREZUPDATED_sheet2.csv", header=FALSE)
+edata_3 = read.csv("data_RNA_Seq_v2_expression_median_ENTREZUPDATED_sheet3.csv", header=FALSE)
+
+edata=data.table::rbindlist(list(edata_1,edata_2,edata_3), use.names = FALSE)
+
+urlfile<-'https://raw.githubusercontent.com/skubleny/Integrated-Molecular-Classification-GC/main/Data/data_clinical_patient.txt'
+pheno<-read.delim(urlfile, comment.char="#")
+
+urlfile<-'https://raw.githubusercontent.com/skubleny/Integrated-Molecular-Classification-GC/main/Data/data_clinical_sample.txt'
+pathology<-read.delim(urlfile, comment.char="#")
+
+```
+```{r}
+#Make feature data table for future reference and annotation 
+fdata = edata %>% dplyr::select(Hugo_Symbol,Entrez_Gene_Id)
+```
+
+```{r}
+#Annotate entrez ID
+annotatedfdata = AnnotationDbi::select(org.Hs.eg.db,keys = as.character(edata$Entrez_Gene_Id), columns = c("SYMBOL","ENTREZID","ENSEMBL"), keytype = "ENTREZID")
+```
+```{r}
+# Change column name to ENTREZID in edata 
+colnames(edata)[which(names(edata) == "Entrez_Gene_Id")] <- "ENTREZID"
+
+edata = merge(annotatedfdata,edata, by.x="ENTREZID")
+```
+
+```{r}
+#Remove EnsembleID, HUGO and Entrez ID
+edata = dplyr::select(edata, -c("Hugo_Symbol","ENTREZID","ENSEMBL")) # Remove HUGO columns
+```
+## Check for NA
+```{r}
+table(is.na(edata$SYMBOL))
+# There is NA due to Entrez Ids that no longer map to gene symbols. 
+```
+```{r}
+#Remove NA Symbols
+edata = edata[!is.na(edata$SYMBOL),]
+```
+## Check for duplicates
+```{r}
+table(duplicated(edata$SYMBOL))
+```
+```{r}
+#Aggregate duplicate genes by mean
+edata %>% group_by(SYMBOL) %>% summarise_all(mean) %>% data.frame() -> edata_merged
+edata = edata_merged
+ #Aggregate and mean duplicate ENTREZIDs 
+```
+
+
+
+##Check for NA genes and NA feature data
+```{r}
+table(is.na(edata$SYMBOL))
+#There is NA Entrez Genes 
+```
+
+```{r}
+edata = edata[!is.na(edata$SYMBOL),]
+```
+
+```{r}
+table(is.na(edata))
+#There is NA data. We will need to investigate this later on. 
+```
+
+
+
+
+## Make gene SYMBOL row names
+```{r}
+#This ensures we can set up a matrix for future procedures
+edata = data.frame(edata, row.names = "SYMBOL")
+```
+## Assess dimensions
+```{r}
+#Assess dimensions 
+dim(edata)
+dim(pheno)
+#We can see there is an imbalance. There is RNA seq data missing from the 440 total patients. 
+```
+## There is some poorly formulated data with spaces and unusable characters. Let's clean this up
+
+```{r}
+pheno[pheno==""] = NA #Convert blank cells to NA
+pheno = pheno[!is.na(pheno$SUBTYPE),] #remove NA for SUBTYPE data. We can only create the classifier by known SUBTYPES. We can later use the unlabelled samples as another "small" unseen test data to simulate our small unseen data. 
+pdata = merge(pheno, pathology, by.x="PATIENT_ID") #Merge data sets to recover sample ID for trimmed pheno data.
+```
+
+```{r}
+pdata = subset(pdata, SUBTYPE !="STAD_POLE") #Remove POLE subtype - POLE is not a specified subtype.
+```
+
+##Organize samples with known subtype 
+```{r}
+#Select Sample ID and replace "-" with "."
+df = as.data.frame(pdata[,"SAMPLE_ID"])
+df = df$`pdata[, "SAMPLE_ID"]` = str_replace_all(df$`pdata[, "SAMPLE_ID"]`, c("-" = "."))
+df = as.data.frame(df)
+colnames(df)[1] = "SAMPLE_ID"
+
+# Reorient edata table, change column names to a column and label appropriately
+tedata = t(edata) #Transpose edata
+tedata=as.data.frame(tedata)
+tedata = tibble::rownames_to_column(tedata, "SAMPLE_ID")
+
+#Merge data frames to make sure only samples with RNA expression data are included 
+mergedf = merge(tedata, df, by.x="SAMPLE_ID") #Merge the datasets by the sample ids that have a subtype. 
+edata = as.data.frame(mergedf)
+edata = edata %>% tibble::column_to_rownames("SAMPLE_ID") # Make the first column the row name
+edata = t(edata)
+```
+
+##We now have an expression dataset with 383 patients which matches my 383 patients with known subtype.
+
+#Now that we have our dataset lets look at our expression data distribution. Do we need to normalize? Do we have outliers?
+
+Boxplot
+```{r}
+# Look at data that is not transformed vs transformed
+par(mfrow=c(1,2))
+boxplot(edata, col=2, range=0)
+boxplot(log2(edata+1), col=2, range=0)
+```
+Histogram
+```{r}
+par(mfrow=c(1,2))
+hist(edata[,1],col=2)
+hist(log2(edata[,1]+1),col=3)
+```
+Density Plot
+```{r}
+par(mfrow=c(1,2))
+omitted = na.omit(edata)
+plot(density(omitted[,1]),col=2)
+lines(density(omitted[,2]),col=3)
+plot(density(log2(omitted[,1]+1)),col=2)
+lines(density(log2(omitted[,2]+1)),col=3)
+```
+qqPlot
+```{r}
+par(mfrow=c(1,2))
+qqplot(edata[,1], edata[,2],col=3)
+qqplot(log2(edata[,1]+1), log2(edata[,2]+1),col=3)
+```
+Bland Altman Plot
+```{r}
+# Bland Altman Plot
+mm = edata[,1] - edata[,2]
+aa = edata[,1] + edata[,2]
+plot(aa,mm,col=2) 
+```
+Let's reassess after a log2 transform 
+```{r}
+# Bland Altman Plot
+mm = log2(edata[,1]+1) - log2(edata[,2]+1)
+aa = log2(edata[,1]+1) + log2(edata[,2]+1)
+plot(aa,mm,col=2) 
+```
+
+##Transform data by log2 based on exploratory data analysis. 
+```{r}
+log_edata = log2(edata+1)
+```
+
+#Median intensity 
+```{r}
+median_TCGA = rowMedians(as.matrix(log_edata))
+hist(median_TCGA, breaks=200)
+#Given this is RNAseq count data I will filter low expression genes by mean. 
+```
+
+
+```{r}
+log_edata = as.data.frame(log_edata)
+log_edata = filter(log_edata,rowMeans(log_edata) > 1)
+dim(log_edata)
+```
+```{r}
+log_edata = log_edata[which(rowMeans(!is.na(log_edata)) > 0.2), which(colMeans(!is.na(log_edata)) > 0.2)]
+dim(log_edata)
+#No significant missing data 
+```
+```{r}
+table(is.na(log_edata))
+#No missing data. Do not need imputation 
+```
+
+```{r}
+median_TCGA2 = rowMedians(as.matrix(log_edata))
+hist(median_TCGA2, breaks=200)
+#New distribution after removal of rowmean < 1
+```
+
+
+From this we determine that there are no higher abundance genes that require imputation. There are no data missingness. There are no NA. 
+
+
+#Quantile Normalization 
+
+```{r}
+#Check if quantile normalization is required.
+colramp = colorRampPalette(c(3,"white",2))(20)
+plot(density(log_edata[,1]),col=colramp[1],lwd=1,ylim=c(0,.20))
+for(i in 2:300){lines(density(log_edata[,i]),lwd=1,col=colramp[i])}
+#In the plot we can see that quantile normalization will aid in the data analysis
+```
+
+#Reduce to common genes
+```{r}
+# Find common genes
+common_genes <- intersect(rownames(log_ACRG), rownames(log_edata))
+
+# Subset and reorder both matrices to the common genes
+log_ACRG <- log_ACRG[common_genes, , drop = FALSE]
+log_edata <- log_edata[common_genes, , drop = FALSE]
+```
+
+
+#FSQN function 
+```{r}
+quantileNormalizeByFeature <- function(matrix_to_normalize,
+                                       target_distribution_matrix){
+
+    if (ncol(matrix_to_normalize) != ncol(target_distribution_matrix)){
+        cat("ERROR: Data matrices are not compatible - column lengths differ!")
+    }
+    else{
+
+        data.qn <- matrix(0, nrow = nrow(matrix_to_normalize),
+                          ncol = ncol(matrix_to_normalize))
+
+        for (i in 1:ncol(matrix_to_normalize)){
+            feature.to.normalize <- matrix_to_normalize[,i]
+            target.feature.dist <- target_distribution_matrix[,i]
+            result <- normalize.quantiles.use.target(
+                x = as.matrix(feature.to.normalize),
+                target = target.feature.dist,
+                copy = TRUE)
+            data.qn[,i] <- result
+        }
+        rownames(data.qn) = rownames(matrix_to_normalize)
+        colnames(data.qn) = colnames(matrix_to_normalize)
+        return(data.qn)
+    }
+}
+```
+
+```{r}
+#Fix the patient_id string
+
+
+patient_id = substr(colnames(log_edata),1,nchar(colnames(log_edata))-3)
+patient_id = gsub("\\.", "-", patient_id)
+
+colnames(log_edata) = patient_id
+log_edata = as.matrix(log_edata)
+```
+
+#FSQN the cancers
+```{r}
+#ACRG FSQN to TCGA as reference 
+set.seed(99)
+target = as.matrix(t(log_edata))
+test = as.matrix(t(log_ACRG))
+fsqn_cancer_ACRG = quantileNormalizeByFeature(test, target)
+```
+
+```{r}
+#Check fsqn
+colramp = colorRampPalette(c(3,"white",2))(20)
+plot(density(log_ACRG[,1]),col=colramp[1],lwd=1,ylim=c(0,.20))
+for(i in 2:300){lines(density(log_ACRG[,i]),lwd=1,col=colramp[i])}
+
+colramp = colorRampPalette(c(3,"white",2))(20)
+colramp2 = colorRampPalette(c(3,"white",4))(20)
+plot(density(t(fsqn_cancer_ACRG)[,1]),col=colramp[1],lwd=1,ylim=c(0,.20))
+for(i in 2:300){lines(density(t(fsqn_cancer_ACRG)[,i]),lwd=1,col=colramp[i])}
+for(i in 2:300){lines(density(log_edata[,i]),lwd=1,col=colramp2[i])}
+#Good distribution approximation
+```
+
+#Extract the genes of interest 
+```{r}
+#Extract PD-L1 and PD-1 as proxy for CPS score/immune checkpoint biomarker
+acrg_genes = fsqn_cancer_ACRG
+acrg_genes = as.data.frame(acrg_genes)
+acrg_genes = acrg_genes %>% select(CD274, PDCD1)
+acrg_genes = tibble::rownames_to_column(acrg_genes, "patient_id")
+
+tcga_genes = t(log_edata)
+tcga_genes = as.data.frame(tcga_genes)
+tcga_genes = tcga_genes %>% select(CD274, PDCD1)
+tcga_genes = tibble::rownames_to_column(tcga_genes, "patient_id")
+
+```
+
+
+#Session Info 
+R version 4.3.1 (2023-06-16)
+Platform: aarch64-apple-darwin20 (64-bit)
+Running under: macOS 15.4.1
+
+Matrix products: default
+BLAS:   /System/Library/Frameworks/Accelerate.framework/Versions/A/Frameworks/vecLib.framework/Versions/A/libBLAS.dylib 
+LAPACK: /Library/Frameworks/R.framework/Versions/4.3-arm64/Resources/lib/libRlapack.dylib;  LAPACK version 3.11.0
+
+locale:
+[1] en_US.UTF-8/en_US.UTF-8/en_US.UTF-8/C/en_US.UTF-8/en_US.UTF-8
+
+time zone: America/Vancouver
+tzcode source: internal
+
+attached base packages:
+[1] stats4    stats     graphics  grDevices utils     datasets  methods   base     
+
+other attached packages:
+ [1] BiocManager_1.30.25   preprocessCore_1.64.0 stringr_1.5.1         dplyr_1.1.4           GEOquery_2.70.0       hgu133plus2.db_3.13.0 org.Hs.eg.db_3.18.0  
+ [8] AnnotationDbi_1.64.1  IRanges_2.36.0        S4Vectors_0.40.2      Biobase_2.62.0        BiocGenerics_0.48.1  
+
+loaded via a namespace (and not attached):
+ [1] tidyselect_1.2.1        blob_1.2.4              Biostrings_2.70.3       bitops_1.0-9            fastmap_1.2.0           RCurl_1.98-1.17        
+ [7] fontquiver_0.2.1        digest_0.6.37           lifecycle_1.0.4         statmod_1.5.0           KEGGREST_1.42.0         RSQLite_2.3.9          
+[13] magrittr_2.0.3          compiler_4.3.1          rlang_1.1.6             tools_4.3.1             yaml_2.3.10             data.table_1.17.0      
+[19] knitr_1.50              askpass_1.2.1           bit_4.6.0               xml2_1.3.8              abind_1.4-8             purrr_1.0.4            
+[25] grid_4.3.1              gdtools_0.4.2           cli_3.6.4               rmarkdown_2.29          crayon_1.5.3            ragg_1.4.0             
+[31] generics_0.1.3          rstudioapi_0.17.1       httr_1.4.7              tzdb_0.5.0              DBI_1.2.3               cachem_1.1.0           
+[37] zlibbioc_1.48.2         XVector_0.42.0          vctrs_0.6.5             fontBitstreamVera_0.1.1 carData_3.0-5           car_3.1-3              
+[43] hms_1.1.3               bit64_4.6.0-1           rstatix_0.7.2           Formula_1.2-5           systemfonts_1.2.2       limma_3.58.1           
+[49] tidyr_1.3.1             glue_1.8.0              stringi_1.8.7           flextable_0.9.7         GenomeInfoDb_1.38.8     tibble_3.2.1           
+[55] pillar_1.10.2           htmltools_0.5.8.1       openssl_2.3.2           GenomeInfoDbData_1.2.11 R6_2.6.1                textshaping_1.0.0      
+[61] evaluate_1.0.3          readr_2.1.5             png_0.1-8               backports_1.5.0         memoise_2.0.1           broom_1.0.8            
+[67] fontLiberation_0.1.0    Rcpp_1.0.14             zip_2.3.2               uuid_1.2-1              officer_0.6.8           xfun_0.52              
+[73] pkgconfig_2.0.3  

@@ -1,0 +1,373 @@
+---
+title: "DFS and DSS Data Compilation"
+output: html_document
+date: "2025-09-04"
+---
+#Libraries
+```{r}
+library(dplyr)
+library(stringr)
+```
+
+We looked at multiple version of the TCGA data. The median follow up time is just poor overall for TCGA and is documented as such in the TCGA CDR documentation. 
+
+#DATA
+
+```{r}
+#Load molecular classification data from original validation study. 
+urlfile<-'https://raw.githubusercontent.com/skubleny/DFS-GC-Subtype-Analysis/main/Data/complete_subtype_final.csv'
+complete_subtype<-read.csv(urlfile)
+
+#Remove survival data from original TCGA study. Will derive the survival metrics directly from the TCGA CDR or the original ACRG data
+complete_subtype = complete_subtype %>% select(-c(X, TME_subtype, High, Low, ACRG_subtype_cal, MSS_TP53neg_cal,MSS_TP53pos_cal,MSI_cal,EMT_cal,RFS_status,RFS_time,PFS_status,PFS_time,DFS_status,DFS_time))
+```
+ 
+#ACRG Clinical Data
+
+```{r}
+#Load data from github repo from ACRG supplemental data/GEO repo
+urlfile<-'https://raw.githubusercontent.com/skubleny/DFS-GC-Subtype-Analysis/main/Data/pheno_data_ACRG.csv'
+pheno_ACRG<-read.csv(urlfile)
+
+urlfile<-'https://raw.githubusercontent.com/skubleny/DFS-GC-Subtype-Analysis/main/Data/pdata_acrg.csv'
+pdata_acrg<-read.csv(urlfile)
+pdata_acrg = pdata_acrg[,-1]
+
+pheno_ACRG = merge(pdata_acrg,pheno_ACRG, by.x="Tumor.ID", all=TRUE)
+pheno_ACRG = pheno_ACRG[!is.na(pheno_ACRG$patient_id),] 
+
+#Change column names
+colnames(pheno_ACRG)[which(names(pheno_ACRG) == "FU.status0.alive.without.ds..1.alive.with.recurren.ds..2.dead.without.ds..3.dead.d.t.recurrent.ds..4.dead..unknown..5..FU.loss")] <- "censor_status"
+colnames(pheno_ACRG)[which(names(pheno_ACRG) == "DFS..months.")] <- "DFS_time"
+colnames(pheno_ACRG)[which(names(pheno_ACRG) == "OS..months.")] <- "DSS_time"
+colnames(pheno_ACRG)[which(names(pheno_ACRG) == "documented.recurrence.no.0..yes.1.unknown.2")] <- "recurrence_status"
+colnames(pheno_ACRG)[which(names(pheno_ACRG) == "MLH1.IHC")] <- "MLH1_ihc"
+colnames(pheno_ACRG)[which(names(pheno_ACRG) == "First.site.of.recurrence_liver.0......1....")] <- "recurrence_liver"
+colnames(pheno_ACRG)[which(names(pheno_ACRG) == "First.site.of.recurrence_peritoneal.seeding.0......1....")] <- "recurrence_peritoneum"
+colnames(pheno_ACRG)[which(names(pheno_ACRG) == "First.site.of.recurrence_ascites...clinically.significant.0......1....")] <- "recurrence_ascites"
+colnames(pheno_ACRG)[which(names(pheno_ACRG) == "First.site.of.recurrence_intraabdominal_LN.0......1....")] <- "recurrence_intraabdominal_LN"
+colnames(pheno_ACRG)[which(names(pheno_ACRG) == "First.site.of.recurrence_distant.lymph.node.0......1....")] <- "recurrence_distant_LN"
+colnames(pheno_ACRG)[which(names(pheno_ACRG) == "First.site.of.recurrence_bone.0......1....")] <- "recurrence_bone"
+colnames(pheno_ACRG)[which(names(pheno_ACRG) == "recurrence.sites_others.0......1....")] <- "recurrence_other"
+
+
+pheno_ACRG$MLH1_ihc <- str_replace_all(pheno_ACRG$MLH1_ihc, c("negative" = "Negative", "positive" = "Positive","partial loss" = "Other"))
+
+pheno_ACRG$MLH1_ihc <- ifelse(grepl("Negative", pheno_ACRG$MLH1_ihc , ignore.case = T), "Negative",
+                                  ifelse(grepl("Positive", pheno_ACRG$MLH1_ihc , ignore.case = T), "Positive",
+                                  ifelse(grepl("Other", pheno_ACRG$MLH1_ihc , ignore.case = T), "Other", "Positive")))
+
+
+```
+#Recurrence data compilation ACRG
+```{r}
+#Make the descritpion other according to recurrence pattern 
+pheno_ACRG <- pheno_ACRG %>%
+  mutate(
+    distant_metastasis_acrg = case_when(
+      # Keep existing NA as NA
+      is.na(description) ~ NA_real_,
+      
+      # If contains "unknown" (case-insensitive) → NA
+      str_detect(tolower(description), "unknown") ~ NA_real_,
+      
+      # If contains any of the keywords → 1
+      str_detect(
+        description,
+        regex("Brain|Breast|Pleural|Lung|Adrenal|Omentum|Colon|Ovary|Bladder|Ureter|Cecum|Ileum|Small Intestine|Ureterovesical|Renal|Rectum|Rectal|Inguinal|Adnexa|Periureteral|Rectus|Pelvic|Kidney|Appendix|Thyroid|Abdominal", 
+              ignore_case = TRUE)
+      ) ~ 1,
+      
+      # Otherwise → 0
+      TRUE ~ 0
+    )
+  )
+
+#Ensure recurrence status corresponds to a known recurrence. If none then make NA. 
+pheno_ACRG <- pheno_ACRG %>%
+  mutate(
+    recurrence_status = case_when(
+      recurrence_status == 1 &
+      rowSums(select(., recurrence_liver, recurrence_peritoneum, recurrence_ascites,
+                          recurrence_intraabdominal_LN, recurrence_distant_LN,
+                          recurrence_bone, recurrence_other, distant_metastasis_acrg), 
+              na.rm = TRUE) == 0 &
+      (is.na(description) | str_trim(description) == "" | str_detect(str_to_lower(description), "unknown")) 
+        ~ NA_real_,
+      TRUE ~ recurrence_status
+    )
+  )
+#Change recurrence status unknown to NA
+pheno_ACRG <- pheno_ACRG %>%
+  mutate(
+    recurrence_status = ifelse(recurrence_status == 2, NA, recurrence_status)
+  )
+
+#Make final distant vs locoregional recurrence for ACRG
+pheno_ACRG <- pheno_ACRG %>%
+  mutate(
+    recurrence_final_acrg = case_when(
+      recurrence_status == 0 ~ NA_character_,  # Rule 1
+      
+      # Rule 2: any distant site = 1
+      rowSums(select(., recurrence_liver, recurrence_peritoneum, recurrence_ascites,
+                          recurrence_distant_LN, recurrence_bone, distant_metastasis_acrg),
+              na.rm = TRUE) > 0 ~ "Distant Metastasis",
+      
+      # Rule 3: locoregional
+      distant_metastasis_acrg == 0 & 
+        (recurrence_other == 1 | recurrence_intraabdominal_LN == 1) ~ "Locoregional Recurrence",
+      
+      TRUE ~ NA_character_  # everything else default NA
+    )
+  )
+
+```
+#Mutations and MSI from ACRG
+```{r}
+urlfile<-'https://raw.githubusercontent.com/skubleny/DFS-GC-Subtype-Analysis/main/Data/mutations_ACRG.csv'
+mutations_ACRG<-read.csv(urlfile)
+
+colnames(mutations_ACRG)[which(names(mutations_ACRG) == "sample")] <- "Tumor.ID"
+colnames(mutations_ACRG)[which(names(mutations_ACRG) == "MSI.h.assay.status...16..")] <- "MSI_analysis"
+colnames(mutations_ACRG)[which(names(mutations_ACRG) == "EBV...6..")] <- "ebv_status"
+colnames(mutations_ACRG)[which(names(mutations_ACRG) == "X..mutations")] <- "num_mutations"
+
+mutations_ACRG = merge(pdata_acrg,mutations_ACRG, by.x="Tumor.ID", all=TRUE)
+
+mutations_ACRG = dplyr::select(mutations_ACRG, c("patient_id","MSI_analysis","ebv_status","num_mutations"))
+
+mutations_ACRG$MSI_analysis = as.factor(mutations_ACRG$MSI_analysis)
+mutations_ACRG$ebv_status = as.factor(mutations_ACRG$ebv_status)
+mutations_ACRG$num_mutations = as.numeric(mutations_ACRG$num_mutations)
+
+pheno_ACRG = merge(mutations_ACRG,pheno_ACRG,by="patient_id", all=TRUE )
+
+```
+
+#Trim pheno_ACRG
+```{r}
+pheno_ACRG = dplyr::select(pheno_ACRG, c("patient_id","MLH1_ihc","MSI_analysis","num_mutations","recurrence_status","recurrence_liver","recurrence_peritoneum", "recurrence_ascites","recurrence_intraabdominal_LN","recurrence_distant_LN","recurrence_bone","recurrence_other","description","distant_metastasis_acrg" ,"recurrence_final_acrg", "DFS_time","DSS_time", "censor_status"))
+```
+#Establish DFS/DSS for ACRG
+```{r}
+
+pheno_ACRG <- pheno_ACRG %>%
+  mutate(
+    DSS_status = case_when(
+      censor_status %in% c(0, 1) ~ 1,                          # rule 1
+      censor_status == 3 ~ 2,                                  # rule 2
+      censor_status == 4 & recurrence_status == 1 ~ 2,         # rule 3
+      TRUE ~ NA_real_                                          # everything else = NA
+    )
+  )
+
+pheno_ACRG <- pheno_ACRG %>%
+  mutate(
+    DFS_status = case_when(
+      censor_status %in% 0 ~ 1,                          # rule 1
+      censor_status == c(1,3) ~ 2,
+      censor_status == 4 & recurrence_status == 1 ~ 2,
+      TRUE ~ NA_real_                                          # everything else = NA
+    )
+  )
+
+
+complete_subtype = merge(complete_subtype, pheno_ACRG, by = "patient_id" , all = TRUE)
+```
+
+#TCGA MSI 
+```{r}
+#MSI analysis from initial TCGA study
+urlfile<-'https://raw.githubusercontent.com/skubleny/DFS-GC-Subtype-Analysis/main/Data/data_clinical_sample_mantis.txt'
+tcga_msi_status<-read.delim(urlfile, comment.char="#")
+
+colnames(tcga_msi_status)[which(names(tcga_msi_status) == "PATIENT_ID")] <- "patient_id"
+tcga_msi_status = dplyr::select(tcga_msi_status, c("patient_id","MLH1_SILENCING", "MSI_STATUS"))
+
+urlfile<-'https://raw.githubusercontent.com/skubleny/DFS-GC-Subtype-Analysis/main/Data/stad_tcga_pan_can_atlas_2018_clinical_data.tsv'
+stad_tcga_pan_can_atlas_2018_clinical_data<-read.delim(urlfile, comment.char="#")
+
+stad_tcga_pan_can_atlas_2018_clinical_data = dplyr::select(stad_tcga_pan_can_atlas_2018_clinical_data, c("Patient.ID", "TMB..nonsynonymous.", "MSI.MANTIS.Score", "MSIsensor.Score"))
+colnames(stad_tcga_pan_can_atlas_2018_clinical_data) = c("patient_id", "TMB", "MSI_mantis", "MSIsensor")
+
+tcga_msi_status = merge(tcga_msi_status, stad_tcga_pan_can_atlas_2018_clinical_data, by = "patient_id" , all = TRUE)
+tcga_msi_status$MSI_STATUS = str_replace_all(tcga_msi_status$MSI_STATUS, c("MSI-L" = "0", "MSS" = "0", "MSI-H" = "1"))
+
+complete_subtype = merge(complete_subtype, tcga_msi_status, by = "patient_id" , all = TRUE)
+
+complete_subtype$MSI_pcr = dplyr::coalesce(complete_subtype$MSI_STATUS,complete_subtype$MSI_analysis)
+
+#Check data
+table(duplicated(complete_subtype$patient_id))
+
+```
+
+#TCGA survival endpoints data
+```{r}
+urlfile<-'https://raw.githubusercontent.com/skubleny/DFS-GC-Subtype-Analysis/main/Data/TCGA_cdr.csv'
+tcga_survival_data<-read.csv(urlfile,na.strings = c("NA", "#N/A", ""))
+
+colnames(tcga_survival_data)[which(names(tcga_survival_data) == "bcr_patient_barcode")] <- "patient_id"
+
+tcga_survival_data = tcga_survival_data %>% select(patient_id, new_tumor_event_type, new_tumor_event_site,new_tumor_event_site_other, DSS, DSS.time, DFI, DFI.time)
+
+complete_subtype = merge(complete_subtype, tcga_survival_data, by = "patient_id", all = TRUE)
+complete_subtype = complete_subtype %>% filter(study=="TCGA" | study=="ACRG")
+
+```
+#Recurrence data compilation ACRG
+```{r}
+#Make the thyroid recurrence a Distant met
+complete_subtype <- complete_subtype %>%
+  mutate(
+    new_tumor_event_type = case_when(
+      str_detect(str_to_lower(new_tumor_event_site_other), "thyroid") ~ "Distant Metastasis",
+      TRUE ~ new_tumor_event_type
+    )
+  )
+
+#Remove New primary tumours to focus on gastric cancer recurrence and stratify strictly by distant met vs locoregional. 
+complete_subtype <- complete_subtype %>%
+  mutate(
+    new_tumor_event_type = case_when(
+      new_tumor_event_type == "Locoregional Recurrence|Distant Metastasis" ~ "Distant Metastasis",
+      new_tumor_event_type == "New Primary Tumor" ~ NA_character_,
+      new_tumor_event_type == "Locoregional Recurrence|New Primary Tumor" ~ NA_character_,
+      TRUE ~ new_tumor_event_type
+    )
+  )
+
+#Change the one locoregional to distant met where there is documents distant nodes
+complete_subtype <- complete_subtype %>%
+  mutate(
+    new_tumor_event_type = case_when(
+      new_tumor_event_type == "Locoregional Recurrence" & 
+        new_tumor_event_site == "Non-regional / Distant Lymph Nodes" ~ "Distant Metastasis",
+      TRUE ~ new_tumor_event_type
+    )
+  )
+```
+#Combine recurrence data ACRG and TCGA
+```{r}
+complete_subtype$recurrence_site_combo = dplyr::coalesce(complete_subtype$recurrence_final_acrg,complete_subtype$new_tumor_event_type)
+
+```
+#Allocate proper labels to survivor data
+```{r}
+complete_subtype <- complete_subtype %>%
+  mutate(
+    DFI = case_when(
+      DFI %in% 0 ~ 1,                          # rule 1
+      DFI == c(1) ~ 2,                                  # rule 2
+      TRUE ~ NA_real_                                          # everything else = NA
+    )
+  )
+
+complete_subtype <- complete_subtype %>%
+  mutate(
+    DSS = case_when(
+      DSS %in% 0 ~ 1,                          # rule 1
+      DSS == c(1) ~ 2,                                  # rule 2
+      TRUE ~ NA_real_                                          # everything else = NA
+    )
+  )
+```
+
+
+#Composite disease status nDFS
+```{r}
+#Convert the days to months with 7 decimal places like ACRG
+complete_subtype <- complete_subtype %>%
+  mutate(
+    DFI.time = round(`DFI.time` / 30.44, 7),
+    DSS.time  = round(`DSS.time` / 30.44, 7)
+  )
+
+#Coalesce the ACRG and TCGA DFS and DSS data into a single column
+complete_subtype$DFS_status = dplyr::coalesce(complete_subtype$DFS_status,complete_subtype$DFI)
+complete_subtype$DFS_time = dplyr::coalesce(complete_subtype$DFS_time,complete_subtype$DFI.time)
+
+complete_subtype$DSS_status = dplyr::coalesce(complete_subtype$DSS_status,complete_subtype$DSS)
+complete_subtype$DSS_time = dplyr::coalesce(complete_subtype$OS_time,complete_subtype$DSS.time)
+```
+#Add in the PD-L1 and PD-1 gene expression values
+These were already normalized and cross-platform normalized. 
+```{r}
+urlfile<-'https://raw.githubusercontent.com/skubleny/DFS-GC-Subtype-Analysis/main/Data/acrg_genes.csv'
+acrg_genes<-read.csv(urlfile,row.names = 1 )
+urlfile<-'https://raw.githubusercontent.com/skubleny/DFS-GC-Subtype-Analysis/main/Data/tcga_genes.csv'
+tcga_genes<-read.csv(urlfile,row.names = 1)
+
+complete_subtype = merge(complete_subtype, acrg_genes, by="patient_id", all= TRUE)
+
+complete_subtype = merge(complete_subtype, tcga_genes, by="patient_id", all= TRUE)
+
+
+complete_subtype$CD274_combo = dplyr::coalesce(complete_subtype$CD274.x,complete_subtype$CD274.y)
+complete_subtype$PDCD1_combo = dplyr::coalesce(complete_subtype$PDCD1.x,complete_subtype$PDCD1.y)
+```
+#Make chemorads variable
+```{r}
+complete_subtype <- complete_subtype %>%
+  mutate(
+    chemorads = case_when(
+      chemotherapy == "Yes" & radiation == "Yes" ~ "Chemorads",
+      chemotherapy == "Yes" & radiation == "No"  ~ "Chemotherapy",
+      chemotherapy == "No"  & radiation == "Yes" ~ "Radiotherapy",
+      chemotherapy == "No"  & radiation == "No"  ~ "No",
+      TRUE ~ NA_character_
+    )
+  )
+
+```
+#Descriptive statistics 
+```{r}
+dfsdss_data = complete_subtype[!complete_subtype$stage == 'IV' & !complete_subtype$tumour_location_coarse == 'Whole', ]
+
+dfsdss_data = dfsdss_data %>% dplyr::filter(study=="TCGA" | study=="ACRG")
+
+dfsdss_data = dfsdss_data %>% select(-c(CD274.y, CD274.x, PDCD1.y, PDCD1.x, description, DFI, DFI.time, DSS, DSS.time, distant_metastasis_acrg, recurrence_final_acrg, recurrence_status, recurrence_liver, recurrence_peritoneum, recurrence_ascites, recurrence_intraabdominal_LN, recurrence_distant_LN, recurrence_bone, recurrence_other, censor_status, new_tumor_event_type, new_tumor_event_site, new_tumor_event_site_other))
+
+dfsdss_data <- dfsdss_data %>%
+  # Step 1: remove rows where both times are missing
+  filter(!(is.na(DFS_time) & is.na(DSS_time))) %>%
+  # Step 2: remove rows where both statuses are missing
+  filter(!(is.na(DFS_status) & is.na(DSS_status)))
+```
+#FINAL DATA FOR STUDY 
+```{r}
+write.csv(dfsdss_data, "dfsdss_data.csv")
+```
+
+#Session Info 
+R version 4.3.1 (2023-06-16)
+Platform: aarch64-apple-darwin20 (64-bit)
+Running under: macOS 15.4.1
+
+Matrix products: default
+BLAS:   /System/Library/Frameworks/Accelerate.framework/Versions/A/Frameworks/vecLib.framework/Versions/A/libBLAS.dylib 
+LAPACK: /Library/Frameworks/R.framework/Versions/4.3-arm64/Resources/lib/libRlapack.dylib;  LAPACK version 3.11.0
+
+locale:
+[1] en_US.UTF-8/en_US.UTF-8/en_US.UTF-8/C/en_US.UTF-8/en_US.UTF-8
+
+time zone: America/Vancouver
+tzcode source: internal
+
+attached base packages:
+[1] stats     graphics  grDevices utils     datasets  methods   base     
+
+other attached packages:
+[1] stringr_1.5.1 dplyr_1.1.4  
+
+loaded via a namespace (and not attached):
+ [1] generics_0.1.3          tidyr_1.3.1             fontLiberation_0.1.0    rstatix_0.7.2           xml2_1.3.8              stringi_1.8.7          
+ [7] digest_0.6.37           magrittr_2.0.3          evaluate_1.0.3          grid_4.3.1              flextable_0.9.7         fastmap_1.2.0          
+[13] plyr_1.8.9              zip_2.3.2               backports_1.5.0         Formula_1.2-5           purrr_1.0.4             fontBitstreamVera_0.1.1
+[19] textshaping_1.0.0       abind_1.4-8             cli_3.6.4               rlang_1.1.6             fontquiver_0.2.1        withr_3.0.2            
+[25] yaml_2.3.10             gdtools_0.4.2           tools_4.3.1             officer_0.6.8           reshape2_1.4.4          uuid_1.2-1             
+[31] broom_1.0.8             vctrs_0.6.5             R6_2.6.1                lifecycle_1.0.4         car_3.1-3               ragg_1.4.0             
+[37] pkgconfig_2.0.3         pillar_1.10.2           data.table_1.17.0       glue_1.8.0              Rcpp_1.0.14             systemfonts_1.2.2      
+[43] xfun_0.52               tibble_3.2.1            tidyselect_1.2.1        rstudioapi_0.17.1       knitr_1.50              htmltools_0.5.8.1      
+[49] rmarkdown_2.29          carData_3.0-5           compiler_4.3.1          askpass_1.2.1           openssl_2.3.2          

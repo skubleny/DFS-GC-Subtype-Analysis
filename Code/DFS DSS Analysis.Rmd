@@ -1,0 +1,2021 @@
+---
+title: "DFS DSS Analysis"
+output: html_document
+date: "2025-09-04"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+NOTE:
+All reference to disease free survival (DFS) is more accurately referred to as disease free interval (DFI) as per the main manuscript.
+
+#Load libraries
+```{r}
+library(ggplot2)
+library(devtools)
+library(dplyr)
+library(annotate)
+library(stringr)
+library(preprocessCore)
+library(measures)
+library(remotes)
+library(mlr)
+library(mlr3filters)
+library(Metrics)
+library(MLmetrics)
+library(reshape2)
+library(Rmisc)
+library(survival)
+library(survminer)
+library(pheatmap)
+library(RColorBrewer)
+library(forestplot)
+library(survey)
+library(gtsummary)
+library(flextable)
+library(openxlsx)
+library(tidyr)
+library(rstatix)
+library(ggpubr)
+library(ggmosaic)
+```
+
+#Load the finalized and compiled DSS DFS data 
+```{r}
+urlfile<-'https://raw.githubusercontent.com/skubleny/DFS-GC-Subtype-Analysis/main/Data/dfsdss_data.csv'
+DFSDSS_data <-read.csv(urlfile, row.names = 1, stringsAsFactors = TRUE)
+
+```
+
+
+#GTsummary tables Table 1
+```{r}
+
+############################
+
+
+tb_overall = tbl_summary(DFSDSS_data,
+             percent = "column", 
+             include=c("age","stage", "sex", "TCGA_subtype", "ACRG_subtype", "TME_subtype_cal", "study", "tumour_location_coarse", "chemotherapy", "radiation", "chemorads", "DFS_status", "DSS_status")) %>% 
+   remove_row_type(variables = everything(),type = "missing") %>% 
+   add_n(col_label="**n/N (Missing %)**", statistic= "{N_nonmiss} / {N_obs} ({p_miss}%)", add_footnote = "Percent") 
+ 
+tb_overall_flex = as_flex_table(
+  tb_overall,
+  include = everything(),
+  return_calls = FALSE,
+  strip_md_bold = TRUE
+)
+ 
+save_as_docx("tb_overall" = tb_overall_flex,path = "table1_section1.docx")
+
+################################################
+table2 <-
+  tbl_summary(
+    DFSDSS_data,
+    include = c("age","stage", "sex", "TCGA_subtype", "ACRG_subtype", "TME_subtype_cal", "study", "tumour_location_coarse", "chemotherapy", "radiation", "chemorads", "DFS_status", "DSS_status"),
+    by = study, # split table by group
+    missing = "no" # don't list missing data separately
+  ) %>%
+  add_p()
+
+
+table2 = as_flex_table(
+  table2,
+  include = everything(),
+  return_calls = FALSE,
+  strip_md_bold = TRUE
+)
+ 
+save_as_docx("table2" = table2,path = "table1_acrgvstcga_section2.docx")
+```
+
+#Supplementary table 1
+Supplement table of the demographics for the cohort with the DFS and DSS NAs removed
+```{r}
+
+############
+############
+####DFS#####
+############
+############
+############
+############################
+data_sub = DFSDSS_data %>% filter(!(is.na(DFS_status) | is.na(DFS_time)))
+
+tb_overall = tbl_summary(data_sub,
+             percent = "column", 
+             include=c("age","stage", "sex", "TCGA_subtype", "ACRG_subtype", "TME_subtype_cal", "study", "tumour_location_coarse", "chemotherapy", "radiation", "chemorads")) %>% 
+   remove_row_type(variables = everything(),type = "missing") %>% 
+   add_n(col_label="**n/N (Missing %)**", statistic= "{N_nonmiss} / {N_obs} ({p_miss}%)", add_footnote = "Percent") 
+ 
+tb_overall_flex = as_flex_table(
+  tb_overall,
+  include = everything(),
+  return_calls = FALSE,
+  strip_md_bold = TRUE
+)
+ 
+save_as_docx("tb_overall" = tb_overall_flex,path = "DFS_cohort_supplement.docx")
+
+table2 <-
+  tbl_summary(
+    data_sub,
+    include = c("age","stage", "sex", "TCGA_subtype", "ACRG_subtype", "TME_subtype_cal", "study", "tumour_location_coarse", "chemotherapy", "radiation", "chemorads"),
+    by = study, # split table by group
+    missing = "no" # don't list missing data separately
+  ) %>%
+  add_p()
+
+
+table2 = as_flex_table(
+  table2,
+  include = everything(),
+  return_calls = FALSE,
+  strip_md_bold = TRUE
+)
+save_as_docx("table2" = table2,path = "DFS_cohort_supplement_section2.docx")
+
+```
+
+
+#Median follow up time
+```{r}
+#DFS median follow up 
+check = DFSDSS_data
+check$DFS_status = ifelse(check$DFS_status == 1, 0, 1)
+fit <- survfit(Surv(DFS_time, DFS_status==0) ~ 1, data = check)
+surv_median(fit)
+
+fit <- survfit(Surv(DFS_time, DFS_status==0) ~ 1 + study, data = check)
+surv_median(fit)
+```
+
+#Univariate DFS continuous variable hazard ratio plots 
+```{r}
+#TCGA
+multivariate_cox = coxph(Surv(DFS_time, DFS_status) ~ STAD_EBV + STAD_MSI + STAD_GS + STAD_CIN , data = DFSDSS_data)
+summary(multivariate_cox)
+
+broom <- broom::tidy(multivariate_cox, exponentiate = TRUE, conf.int = TRUE)
+broom$compiled = sprintf("%.2f (%.2f, %.2f)", broom$estimate, broom$conf.low, broom$conf.high)
+write.csv(broom, "broom_tcga_survival_dfs.csv")
+
+multivariate_cox_table = tbl_regression(multivariate_cox, exponentiate = TRUE)
+
+multivariate_cox_table = as_flex_table(
+  multivariate_cox_table,
+  include = everything(),
+  return_calls = FALSE)
+ 
+flextable::save_as_docx("multivariate_cox_table" = multivariate_cox_table,path = "univariate_cox_tcga_dfs.docx")
+
+#ACRG
+multivariate_cox = coxph(Surv(DFS_time, DFS_status) ~ MSS_TP53neg + MSS_TP53pos + MSI + EMT, data = DFSDSS_data)
+summary(multivariate_cox)
+
+broom <- broom::tidy(multivariate_cox, exponentiate = TRUE, conf.int = TRUE)
+broom$compiled = sprintf("%.2f (%.2f, %.2f)", broom$estimate, broom$conf.low, broom$conf.high)
+write.csv(broom, "broom_acrg_survival_dfs.csv")
+
+multivariate_cox_table = tbl_regression(multivariate_cox, exponentiate = TRUE)
+
+multivariate_cox_table = as_flex_table(
+  multivariate_cox_table,
+  include = everything(),
+  return_calls = FALSE)
+ 
+flextable::save_as_docx("multivariate_cox_table" = multivariate_cox_table,path = "univariate_cox_acrg_dfs.docx")
+
+
+#TME
+multivariate_cox = coxph(Surv(DFS_time, DFS_status) ~ High_cal + Low_cal, data = DFSDSS_data)
+summary(multivariate_cox)
+
+broom <- broom::tidy(multivariate_cox, exponentiate = TRUE, conf.int = TRUE)
+broom$compiled = sprintf("%.2f (%.2f, %.2f)", broom$estimate, broom$conf.low, broom$conf.high)
+write.csv(broom, "broom_tme_survival_dfs.csv")
+
+multivariate_cox_table = tbl_regression(multivariate_cox, exponentiate = TRUE)
+
+multivariate_cox_table = as_flex_table(
+  multivariate_cox_table,
+  include = everything(),
+  return_calls = FALSE)
+ 
+flextable::save_as_docx("multivariate_cox_table" = multivariate_cox_table,path = "univariate_cox_tme_dfs.docx")
+
+```
+#Univariate cox forest tcga
+```{r}
+
+
+multivariate_cox_discrete = coxph(Surv(DFS_time, DFS_status) ~ TCGA_subtype , data = DFSDSS_data)
+summary(multivariate_cox_discrete)
+
+wald_mutli = car::Anova(multivariate_cox_discrete)
+
+#######################NEW Sep 4, 2025 without global wald###########################
+####################################################################
+####################################################################
+
+#Imported table text                 
+table_text <- read.delim("~/Documents/R projects/Integrated Gastric Cancer Analyses/tcga_survival_dfs_forest.txt", header=FALSE)
+table_text = as.matrix(table_text)
+table_text = na_if(table_text, '')
+table_text = table_text[,-3]
+
+table_data <- read.delim("~/Documents/R projects/Integrated Gastric Cancer Analyses/tcga_survival_dfs_forest.txt")
+table_data = table_data[,-3]
+
+
+subgps <- c(3,4,5,6)
+table_text[subgps] <- paste("  ",table_text[subgps]) 
+
+table_text = as.matrix(table_text[,-c(3:5)])
+table_text_list = list(list(), list())
+        table_text_list[[1]] <- table_text[,1]
+        table_text_list[[2]] <- table_text[,2]
+        table_text_list[[1]][1] <- list(expression(bold("Variable")))
+        table_text_list[[2]][1] <- list(expression(bold("HR (95% CI)")))
+        table_text_list[[1]][2] <- list(expression(bold("TCGA Subtype")))
+      
+
+forestplot_final = forestplot(table_text_list, mean = cbind(c(NA, table_data$hazard)),lower = cbind(c(NA, table_data$lower)) ,upper = cbind(c(NA, table_data$upper)), 
+           new_page = TRUE,
+           zero = 1,
+           colgap = unit(2,"mm"),
+           lineheight = unit(5.5,"mm"),
+           line.margin = unit(0.1,"mm"),
+           graphwidth = unit(40,"mm"),
+           clip = c(0.20, 2) ,
+           boxsize = 0.6,
+           align = c("l", "l", "l"),
+           grid = structure((1), gp = gpar(col = "black", lty = 2, lwd = 1)),
+           xlog=TRUE,
+           vertices = TRUE,
+           lwd.ci = 2,
+           ci.vertices.height = 0.25,
+           xticks = c(0.2, 0.50, 1,2), 
+           col = fpColors(box = "skyblue3", lines = "skyblue3"),
+           txt_gp = fpTxtGp(label = gpar(ps= 7, align ="left", cex=1.15),
+                            ticks = gpar(ps= 7, cex = 1.15),
+                            xlab = gpar(ps= 7, cex = 1.05)),
+           hrzl_lines = list("2" = gpar(lwd = 1, columns = 1:3, col = "black"), 
+                            "7" = gpar(lwd = 1, columns = 1:2, col = "black")),
+           xlab  = "Hazard Ratio (95% CI)")
+forestplot_final
+
+svg("forestplot_tcga_DFS_nowald_sep2025.svg", width=5, height=2.5)
+forestplot_final
+dev.off()
+
+```
+#Univariate cox forest acrg
+```{r}
+
+
+multivariate_cox_discrete = coxph(Surv(DFS_time, DFS_status) ~ ACRG_subtype , data = DFSDSS_data)
+summary(multivariate_cox_discrete)
+
+wald_mutli = car::Anova(multivariate_cox_discrete)
+
+#######################NEW MARCH 13, 2024 without global wald###########################
+####################################################################
+####################################################################
+
+#Imported table text                 
+table_text <- read.delim("~/Documents/R projects/Integrated Gastric Cancer Analyses/acrg_survival_dfs_forest.txt", header=FALSE)
+table_text = as.matrix(table_text)
+table_text = na_if(table_text, '')
+table_text = table_text[,-3]
+
+table_data <- read.delim("~/Documents/R projects/Integrated Gastric Cancer Analyses/acrg_survival_dfs_forest.txt")
+table_data = table_data[,-3]
+
+
+subgps <- c(3,4,5,6)
+table_text[subgps] <- paste("  ",table_text[subgps]) 
+
+table_text = as.matrix(table_text[,-c(3:5)])
+table_text_list = list(list(), list())
+        table_text_list[[1]] <- table_text[,1]
+        table_text_list[[2]] <- table_text[,2]
+        table_text_list[[1]][1] <- list(expression(bold("Variable")))
+        table_text_list[[2]][1] <- list(expression(bold("HR (95% CI)")))
+        table_text_list[[1]][2] <- list(expression(bold("ACRG Subtype")))
+        
+
+
+forestplot_final = forestplot(table_text_list, mean = cbind(c(NA, table_data$hazard)),lower = cbind(c(NA, table_data$lower)) ,upper = cbind(c(NA, table_data$upper)), 
+           new_page = TRUE,
+           zero = 1,
+           colgap = unit(2,"mm"),
+           lineheight = unit(5.5,"mm"),
+           line.margin = unit(0.1,"mm"),
+           graphwidth = unit(40,"mm"),
+           clip = c(0.25, 2) ,
+           boxsize = 0.6,
+           align = c("l", "l", "l"),
+           grid = structure((1), gp = gpar(col = "black", lty = 2, lwd = 1)),
+           xlog=TRUE,
+           vertices = TRUE,
+           lwd.ci = 2,
+           ci.vertices.height = 0.25,
+           xticks = c(0.2, 0.50, 1,2), 
+           col = fpColors(box = "skyblue3", lines = "skyblue3"),
+           txt_gp = fpTxtGp(label = gpar(ps= 7, align ="left", cex=1.15),
+                            ticks = gpar(ps= 7, cex = 1.15),
+                            xlab = gpar(ps= 7, cex = 1.05)),
+           hrzl_lines = list("2" = gpar(lwd = 1, columns = 1:3, col = "black"), 
+                            "7" = gpar(lwd = 1, columns = 1:2, col = "black")),
+           xlab  = "Hazard Ratio (95% CI)")
+forestplot_final
+
+svg("forestplot_acrg_DFS_nowald_sep2025.svg", width=5, height=2.5)
+forestplot_final
+dev.off()
+
+```
+#Univariate cox forest tme
+```{r}
+
+
+multivariate_cox_discrete = coxph(Surv(DFS_time, DFS_status) ~ High_cal , data = DFSDSS_data)
+summary(multivariate_cox_discrete)
+
+wald_mutli = car::Anova(multivariate_cox_discrete)
+
+
+#######################NEW MARCH 13, 2024 without global wald###########################
+####################################################################
+####################################################################
+
+#Imported table text                 
+table_text <- read.delim("~/Documents/R projects/Integrated Gastric Cancer Analyses/tme_survival_dfs_forest.txt", header=FALSE)
+table_text = as.matrix(table_text)
+table_text = na_if(table_text, '')
+table_text = table_text[,-3]
+
+table_data <- read.delim("~/Documents/R projects/Integrated Gastric Cancer Analyses/tme_survival_dfs_forest.txt")
+table_data = table_data[,-3]
+
+
+subgps <- c(3,4,5,6)
+table_text[subgps] <- paste("  ",table_text[subgps]) 
+
+table_text = as.matrix(table_text[,-c(3:5)])
+table_text_list = list(list(), list())
+        table_text_list[[1]] <- table_text[,1]
+        table_text_list[[2]] <- table_text[,2]
+        table_text_list[[1]][1] <- list(expression(bold("Variable")))
+        table_text_list[[2]][1] <- list(expression(bold("HR (95% CI)")))
+        table_text_list[[1]][2] <- list(expression(bold("TME Subtype")))
+        
+
+
+forestplot_final = forestplot(table_text_list, mean = cbind(c(NA, table_data$hazard)),lower = cbind(c(NA, table_data$lower)) ,upper = cbind(c(NA, table_data$upper)), 
+           new_page = TRUE,
+           zero = 1,
+           colgap = unit(2,"mm"),
+           lineheight = unit(5.5,"mm"),
+           line.margin = unit(0.1,"mm"),
+           graphwidth = unit(40,"mm"),
+           clip = c(0.2, 2),
+           boxsize = 0.8,
+           align = c("l", "l", "l"),
+           grid = structure((1), gp = gpar(col = "black", lty = 2, lwd = 1)),
+           xlog=TRUE,
+           vertices = TRUE,
+           lwd.ci = 2,
+           ci.vertices.height = 0.25,
+           xticks = c(0.15, 0.50, 1,2), 
+           col = fpColors(box = "skyblue3", lines = "skyblue3"),
+           txt_gp = fpTxtGp(label = gpar(ps= 7, align ="left", cex=1.15),
+                            ticks = gpar(ps= 7, cex = 1.15),
+                            xlab = gpar(ps= 7, cex = 1.05)),
+           hrzl_lines = list("2" = gpar(lwd = 1, columns = 1:3, col = "black"), 
+                            "5" = gpar(lwd = 1, columns = 1:2, col = "black")),
+           xlab  = "Hazard Ratio (95% CI)")
+forestplot_final
+
+svg("forestplot_tme_DFS_nowald_Sep2025.svg", width=5, height=2.25)
+forestplot_final
+dev.off()
+
+```
+#Univariate subtype DFS survival (discrete with risk table)
+```{r}
+#TCGA cox
+TCGA_cox_rfs = coxph(Surv(DFS_time, DFS_status) ~ TCGA_subtype, data = DFSDSS_data)
+summary(TCGA_cox_rfs)
+summary(survfit(Surv(DFS_time, DFS_status) ~ TCGA_subtype, data = DFSDSS_data), times = 60)
+pairwise_survdiff(Surv(DFS_time, DFS_status) ~ TCGA_subtype, data = DFSDSS_data)
+
+tcga_km_dfs_risk = ggsurvplot(survfit(Surv(DFS_time, DFS_status) ~ TCGA_subtype, data = DFSDSS_data), 
+           risk.table=TRUE, 
+           risk.table.y.text = FALSE, 
+           pval= "Logrank test \n p = 0.09", 
+           pval.coord = c(80, 0.96),
+           palette = c("#F39B7FFF", "#91D1C2FF", "#4DBBD5FF", "#E64B35FF"),
+           risk.table.y.text.col = TRUE,
+           break.time.by = 24,
+           xlab = "Time (months)",
+           ylab = "DFI probability",
+           legend = c(0.25,0.24),
+           title = "TCGA Kaplan-Meier",
+           legend.title = "TCGA Subtype",
+           legend.labs=c("CIN", "EBV", "GS", "MSI"),
+           font.legend = c(12, "plain", "black"),
+           font.main = c(16, "plain", "black"),
+           font.x = c(16, "plain"),
+           font.y = c(16, "plain"),
+           risk.table.fontsize = 5,
+           surv.plot.height = 0.7,
+           risk.table.height = 0.3)
+
+svg(filename="tcga_km_dfs_risk.svg", width=4.6, height=6)
+tcga_km_dfs_risk
+dev.off()
+
+
+#ACRG cox
+ACRG_cox_dfs = coxph(Surv(DFS_time, DFS_status) ~ ACRG_subtype, data = DFSDSS_data)
+summary(ACRG_cox_dfs)
+pairwise_survdiff(Surv(DFS_time, DFS_status) ~ ACRG_subtype, data = DFSDSS_data)
+
+acrg_km_dfs_risk = ggsurvplot(survfit(Surv(DFS_time, DFS_status) ~ ACRG_subtype, data = DFSDSS_data), 
+           risk.table=TRUE, 
+           risk.table.y.text = FALSE, 
+           pval= "Logrank test \n p = 0.07", 
+           pval.coord = c(80, 0.96),
+           palette = c("#A6CEE3", "#3C5488FF", "#8491B4FF", "#33A02C"),
+           risk.table.y.text.col = TRUE,
+           break.time.by = 24,
+           xlab = "Time (months)",
+           ylab = "DFI probability",
+           title = "ACRG Kaplan-Meier",
+           legend.title = "ACRG Subtype",
+           legend = c(0.33,0.25),
+           legend.labs=c("EMT", "MSI", "MSS TP53 Negative", "MSS TP53 Positive"),
+           font.legend = c(12, "plain", "black"),
+           font.main = c(16, "plain", "black"),
+           font.x = c(16, "plain"),
+           font.y = c(16, "plain"),
+           risk.table.fontsize = 5,
+           surv.plot.height = 0.7,
+           risk.table.height = 0.3)
+
+
+svg(filename="acrg_km_dfs_risk.svg", width=4.6, height=6)
+acrg_km_dfs_risk
+dev.off()
+
+        
+DFSDSS_data$TME_subtype_cal = factor(DFSDSS_data$TME_subtype_cal, levels = c("Low", "High"))
+ 
+TME_cox_dfs = coxph(Surv(DFS_time, DFS_status) ~ TME_subtype_cal, data = DFSDSS_data)
+summary(TME_cox_dfs)
+
+tme_km_dfs_risk = ggsurvplot(survfit(Surv(DFS_time, DFS_status) ~ TME_subtype_cal, data = DFSDSS_data), 
+           risk.table=TRUE, 
+           risk.table.y.text = FALSE, 
+           pval= "Logrank test \n p < 0.001", 
+           pval.coord = c(80,0.25),
+           palette = c("#EFC000FF","#925E9FFF"),
+           risk.table.y.text.col = TRUE,
+           break.time.by = 24,
+           xlab = "Time (months)",
+           ylab = "DFI probability",
+           title = "TME Kaplan-Meier",
+           legend = c(0.25,0.25),
+           legend.title = "TME Subtype",
+           legend.labs=c("Low", "High"),
+           font.legend = c(12, "plain", "black"),
+           font.main = c(16, "plain", "black"),
+           font.x = c(16, "plain"),
+           font.y = c(16, "plain"),
+           risk.table.fontsize = 5,
+           surv.plot.height = 0.7,
+           risk.table.height = 0.3)
+
+svg(filename="tme_km_dfs_risk.svg", width=4.6, height=6)
+tme_km_dfs_risk
+dev.off()
+
+
+```
+#Multivariate DFS Cox 
+
+```{r}
+#THIS MODEL FOR SUBTYPES ONLY
+multivariate_cox = coxph(Surv(DFS_time, DFS_status) ~ STAD_EBV + STAD_MSI + STAD_GS + STAD_CIN + High_cal + Low_cal + MSS_TP53neg + MSS_TP53pos + MSI + EMT, data = DFSDSS_data)
+summary(multivariate_cox)
+AIC(multivariate_cox)
+
+multivariate_cox_discrete = coxph(Surv(DFS_time, DFS_status) ~ TCGA_subtype + TME_subtype_cal + ACRG_subtype, data = DFSDSS_data)
+summary(multivariate_cox_discrete)
+wald_mutli = car::Anova(multivariate_cox_discrete)
+wald_mutli$adjustp = p.adjust(wald_mutli$`Pr(>Chisq)`, method="BH")
+
+multivariate_cox_table = tbl_regression(multivariate_cox, exponentiate = TRUE)
+
+multivariate_cox_table = as_flex_table(
+  multivariate_cox_table,
+  include = everything(),
+  return_calls = FALSE)
+ 
+flextable::save_as_docx("multivariate_subtypeonly_table_dfs" = multivariate_cox_table,path = "multivariate_subtypeonly_table_dfs.docx")
+
+#####
+```
+#Multivariate cox forest plot
+```{r}
+library(forestplot)
+
+#From these models I entered relevant data into .txt file to make forest plot
+#############NEW MODELS MARCH 23 2022################################
+#####################################################################
+multivariate_cox = coxph(Surv(DFS_time, DFS_status) ~ STAD_EBV + STAD_MSI + STAD_GS + STAD_CIN + High_cal + Low_cal + MSS_TP53neg + MSS_TP53pos + MSI + EMT + stage + age+ sex + tumour_location_coarse + study + chemotherapy + radiation, data = DFSDSS_data)
+summary(multivariate_cox)
+
+broom <- broom::tidy(multivariate_cox, exponentiate = TRUE, conf.int = TRUE)
+broom$compiled = sprintf("%.2f (%.2f, %.2f)", broom$estimate, broom$conf.low, broom$conf.high)
+write.csv(broom, "broom_multivariate_survival_dfs_forest.csv")
+
+multivariate_cox_discrete = coxph(Surv(DFS_time, DFS_status) ~ TCGA_subtype + TME_subtype_cal + ACRG_subtype + stage + age+ sex + tumour_location_coarse + study + chemotherapy + radiation, data = DFSDSS_data)
+summary(multivariate_cox)
+wald_mutli = car::Anova(multivariate_cox_discrete)
+wald_mutli$adjustp = p.adjust(wald_mutli$`Pr(>Chisq)`, method="BH")
+
+  
+
+####################################################################
+####################################################################
+#######################NEW MARCH 15, 2022###########################
+####################################################################
+####################################################################
+
+#Note: *** < 0.001, ** < 0.01, * <0.05
+
+
+#Imported table text                 
+table_text <- read.delim("~/Documents/R projects/Integrated Gastric Cancer Analyses/multivariate_survival_dfs_forest.txt", header=FALSE)
+table_text = as.matrix(table_text)
+table_text = na_if(table_text, '')
+
+table_data <- read.delim("~/Documents/R projects/Integrated Gastric Cancer Analyses/multivariate_survival_dfs_forest.txt")
+
+subgps <- c(3,4,5,6,8,9,11,12,13,14,17,18,20,21,23,24,25,26,27,28,29,30,32,33,34)
+table_text[subgps] <- paste("  ",table_text[subgps]) 
+
+table_text = as.matrix(table_text[,-c(4:6)])
+table_text_list = list(list(), list(), list())
+        table_text_list[[1]] <- table_text[,1]
+        table_text_list[[2]] <- table_text[,2]
+        table_text_list[[3]] <- table_text[,3]
+        table_text_list[[1]][15] <- list(expression(bold("Age")))
+        table_text_list[[3]][15] <- list(expression(bold("0.18")))
+        table_text_list[[1]][1] <- list(expression(bold("Variable")))
+        table_text_list[[2]][1] <- list(expression(bold("HR (95% CI)")))
+        table_text_list[[1]][2] <- list(expression(bold("TCGA Subtype")))
+        table_text_list[[1]][7] <- list(expression(bold("TME Subtype")))
+        table_text_list[[1]][10] <- list(expression(bold("ACRG Subtype")))
+        table_text_list[[1]][16] <- list(expression(bold("Sex")))
+        table_text_list[[1]][19] <- list(expression(bold("Study")))
+        table_text_list[[1]][22] <- list(expression(bold("Chemotherapy")))
+        table_text_list[[1]][25] <- list(expression(bold("Radiation")))
+        table_text_list[[1]][28] <- list(expression(bold("Tumour Location")))
+        table_text_list[[1]][31] <- list(expression(bold("Stage")))
+        table_text_list[[3]][2] <- list(expression(bold("0.98")))
+        table_text_list[[3]][7] <- list(expression(bold("<0.01**")))
+        table_text_list[[3]][10] <- list(expression(bold("0.29")))
+        table_text_list[[3]][16] <- list(expression(bold("<0.05*")))
+        table_text_list[[3]][19] <- list(expression(bold("0.23")))
+        table_text_list[[3]][22] <- list(expression(bold("0.66")))
+        table_text_list[[3]][25] <- list(expression(bold("<0.01**")))
+        table_text_list[[3]][28] <- list(expression(bold("0.66")))
+        table_text_list[[3]][31] <- list(expression(bold("<0.01**")))
+        table_text_list[[3]][1] <- list(expression(bold(paste("Wald Test"^"1"))))
+
+
+forestplot_final = forestplot(table_text_list, mean = cbind(c(NA, table_data$hazard)),lower = cbind(c(NA, table_data$lower)) ,upper = cbind(c(NA, table_data$upper)), 
+           new_page = TRUE,
+           zero = 1,
+           lty.zero = 2,
+           lwd.zero = 4,
+           col.zero = "black",
+           colgap = unit(2,"mm"),
+           lineheight = unit(6,"mm"),
+           line.margin = unit(0.1,"mm"),
+           graphwidth = unit(45,"mm"),
+           clip = c(0.2, 5),
+           boxsize = 0.6,
+           align = c("l", "l", "l"),
+           grid = structure((1), gp = gpar(col = "black", lty = 2, lwd = 1)),
+           xlog=TRUE,
+           vertices = TRUE,
+           lwd.ci = 2,
+           ci.vertices.height = 0.25,
+           xticks = c(0.2, 0.5, 1,  2,5), 
+           col = fpColors(box = "skyblue3", lines = "skyblue3"),
+           txt_gp = fpTxtGp(label = gpar(ps= 7, align ="left", cex = 1.2),
+                            ticks = gpar(ps= 7, cex = 1.15),
+                            xlab = gpar(ps= 7, cex = 1.15)),
+           hrzl_lines = list("2" = gpar(lwd = 1, columns = 1:4, col = "black"), 
+                            "35" = gpar(lwd = 1, columns = 1:3, col = "black")),
+           xlab  = "Hazard Ratio (95% CI)")|>
+  fp_decorate_graph(grid = structure(c(0.2, 0.5, 1,  2,5),gp = gpar(lty = 2, col = "grey70"))) 
+forestplot_final
+
+
+svg("forestplot_multivar_DFS.svg", width=9, height=9)
+forestplot_final
+dev.off()
+
+
+
+```
+
+#Multivariate cox forest plot chemorads
+```{r}
+library(forestplot)
+
+DFSDSS_data$chemorads = factor(DFSDSS_data$chemorads, levels = c("No", "Chemorads", "Chemotherapy","Radiotherapy"))
+#From these models I entered relevant data into .txt file to make forest plot
+#############NEW MODELS MARCH 23 2022################################
+#####################################################################
+multivariate_cox = coxph(Surv(DFS_time, DFS_status) ~ STAD_EBV + STAD_MSI + STAD_GS + STAD_CIN + High_cal + Low_cal + MSS_TP53neg + MSS_TP53pos + MSI + EMT + stage + age+ sex + tumour_location_coarse + study + chemorads, data = DFSDSS_data)
+summary(multivariate_cox)
+
+broom <- broom::tidy(multivariate_cox, exponentiate = TRUE, conf.int = TRUE)
+broom$compiled = sprintf("%.2f (%.2f, %.2f)", broom$estimate, broom$conf.low, broom$conf.high)
+write.csv(broom, "broom_multivariate_survival_dfs_forest_chemorads.csv")
+
+multivariate_cox_discrete = coxph(Surv(DFS_time, DFS_status) ~ TCGA_subtype + TME_subtype_cal + ACRG_subtype + stage + age+ sex + tumour_location_coarse + study + chemorads, data = DFSDSS_data)
+summary(multivariate_cox)
+wald_mutli = car::Anova(multivariate_cox_discrete)
+wald_mutli$adjustp = p.adjust(wald_mutli$`Pr(>Chisq)`, method="BH")
+
+    
+####################################################################
+####################################################################
+#######################NEW MARCH 15, 2022###########################
+####################################################################
+####################################################################
+
+#Imported table text                 
+table_text <- read.delim("~/Documents/R projects/Integrated Gastric Cancer Analyses/multivariate_survival_dfs_forest_chemorads.txt", header=FALSE)
+table_text = as.matrix(table_text)
+table_text = na_if(table_text, '')
+
+table_data <- read.delim("~/Documents/R projects/Integrated Gastric Cancer Analyses/multivariate_survival_dfs_forest_chemorads.txt")
+
+subgps <- c(3,4,5,6,8,9,11,12,13,14,17,18,20,21,23,24,25,26,27,28,29,30,31,32,33)
+table_text[subgps] <- paste("  ",table_text[subgps]) 
+
+table_text = as.matrix(table_text[,-c(4:6)])
+table_text_list = list(list(), list(), list())
+        table_text_list[[1]] <- table_text[,1]
+        table_text_list[[2]] <- table_text[,2]
+        table_text_list[[3]] <- table_text[,3]
+        table_text_list[[1]][15] <- list(expression(bold("Age")))
+        table_text_list[[3]][15] <- list(expression(bold("0.14")))
+        table_text_list[[1]][1] <- list(expression(bold("Variable")))
+        table_text_list[[2]][1] <- list(expression(bold("HR (95% CI)")))
+        table_text_list[[1]][2] <- list(expression(bold("TCGA Subtype")))
+        table_text_list[[1]][7] <- list(expression(bold("TME Subtype")))
+        table_text_list[[1]][10] <- list(expression(bold("ACRG Subtype")))
+        table_text_list[[1]][16] <- list(expression(bold("Sex")))
+        table_text_list[[1]][19] <- list(expression(bold("Study")))
+        table_text_list[[1]][22] <- list(expression(bold("Treatment")))
+        table_text_list[[1]][27] <- list(expression(bold("Tumour Location")))
+        table_text_list[[1]][30] <- list(expression(bold("Stage")))
+        table_text_list[[3]][2] <- list(expression(bold("0.99")))
+        table_text_list[[3]][7] <- list(expression(bold("<0.01**")))
+        table_text_list[[3]][10] <- list(expression(bold("0.31")))
+        table_text_list[[3]][16] <- list(expression(bold("<0.05*")))
+        table_text_list[[3]][19] <- list(expression(bold("0.3")))
+        table_text_list[[3]][22] <- list(expression(bold("<0.01**")))
+        table_text_list[[3]][27] <- list(expression(bold("0.66")))
+        table_text_list[[3]][30] <- list(expression(bold("<0.01**")))
+        table_text_list[[3]][1] <- list(expression(bold(paste("Wald Test"^"1"))))
+
+
+forestplot_final = forestplot(table_text_list, mean = cbind(c(NA, table_data$hazard)),lower = cbind(c(NA, table_data$lower)) ,upper = cbind(c(NA, table_data$upper)), 
+           new_page = TRUE,
+           zero = 1,
+           lty.zero = 2,
+           lwd.zero = 4,
+           col.zero = "black",
+           colgap = unit(2,"mm"),
+           lineheight = unit(6,"mm"),
+           line.margin = unit(0.1,"mm"),
+           graphwidth = unit(45,"mm"),
+           clip = c(0.2, 5),
+           boxsize = 0.6,
+           align = c("l", "l", "l"),
+           grid = structure((1), gp = gpar(col = "black", lty = 2, lwd = 1)),
+           xlog=TRUE,
+           vertices = TRUE,
+           lwd.ci = 2,
+           ci.vertices.height = 0.25,
+           xticks = c(0.25, 0.5, 1,  2,5), 
+           col = fpColors(box = "skyblue3", lines = "skyblue3"),
+           txt_gp = fpTxtGp(label = gpar(ps= 7, align ="left", cex = 1.2),
+                            ticks = gpar(ps= 7, cex = 1.15),
+                            xlab = gpar(ps= 7, cex = 1.15)),
+           hrzl_lines = list("2" = gpar(lwd = 1, columns = 1:4, col = "black"), 
+                            "34" = gpar(lwd = 1, columns = 1:3, col = "black")),
+           xlab  = "Hazard Ratio (95% CI)") |>
+  fp_decorate_graph(grid = structure(c(0.2, 0.5, 1,  2,5),gp = gpar(lty = 2, col = "grey70"))) 
+forestplot_final
+
+svg("forestplot_multivar_DFS_chemorads.svg", width=9, height=9)
+forestplot_final
+dev.off()
+
+
+```
+#Assessment of other correlates to immunotherapy vs TME, MSI and STAD MSI
+```{r}
+DFSDSS_data_long <- DFSDSS_data %>%
+  pivot_longer(
+    cols = c(TME_subtype_cal, ACRG_subtype, TCGA_subtype),
+    names_to = "Subtype_Type",
+    values_to = "Subtype"
+  )
+
+DFSDSS_data_long$Subtype = factor(DFSDSS_data_long$Subtype, levels = c("STAD_CIN", "STAD_EBV", "STAD_GS","STAD_MSI", "EMT", "MSI", "MSS_TP53neg","MSS_TP53pos", "High", "Low"))
+
+#TMB plot
+
+TMB_plot = ggplot(data = DFSDSS_data_long,aes(x = reorder(Subtype, -log(TMB+1), FUN = median, na.rm = TRUE), y = log(TMB+1), fill = Subtype))+
+    geom_violin(alpha=0.4, scale = "width",size=1,color=NA, adjust=2.5) + 
+     ggbeeswarm::geom_quasirandom(method = "pseudorandom", shape = 21,size=2,dodge.width=0.75, width = 0.45, color="black",alpha=0.4,show.legend = F, bandwidth = 1)+
+  geom_boxplot(notch = FALSE,  outlier.size = -1, color="black",lwd=1, alpha = 0.2,show.legend = F) + 
+  scale_fill_manual(values = c("STAD_CIN" = "#F39B7FFF", "STAD_EBV" ="#91D1C2FF","STAD_GS" = "#4DBBD5FF","STAD_MSI" ="#E64B35FF", "EMT" = "#A6CEE3", "MSI" ="#3C5488FF", "MSS_TP53neg" = "#8491B4FF", "MSS_TP53pos" ="#33A02C","High" = "#925E9FFF","Low" = "#EFC000FF")) + 
+  scale_x_discrete(labels = c("STAD_CIN" = "CIN", "STAD_EBV" ="EBV", "STAD_GS" = "GS","STAD_MSI" = "TCGA MSI","EMT"="EMT","MSI" = "ACRG MSI", "MSS_TP53neg" = "MSS TP53-","MSS_TP53pos" = "MSS TP53+","High" = "High","Low" = "Low")) +
+  ylab("log(TMB+1)") + 
+  ggtitle("Distribution of Tumour Mutational Burden (TCGA)") +
+  theme_bw() +
+  theme(axis.text.x = element_text(colour="black", size = 14,angle = 45, hjust=1, vjust=1))  +
+  theme(axis.text.y = element_text(colour="black",size = 14)) + 
+  theme(plot.title = element_text(colour="black", size=14,hjust = 0, vjust=0)) +
+  theme(axis.title.x = element_blank()) +
+  theme(axis.title.y = element_text(colour="black", size=14)) +
+  theme(legend.position = "none") 
+    
+ggsave("TMB_plot.svg", TMB_plot, width=5, height=3.5)
+
+
+#CD274 plot
+
+CD274_plot = ggplot(data = DFSDSS_data_long,aes(x = reorder(Subtype, -CD274_combo, FUN = median, na.rm = TRUE), y = CD274_combo, fill = Subtype))+
+    geom_violin(alpha=0.4, scale = "width",size=1,color=NA, adjust=2.5) + 
+     ggbeeswarm::geom_quasirandom(method = "pseudorandom", shape = 21,size=2,dodge.width=0.75, width = 0.45, color="black",alpha=0.4,show.legend = F, bandwidth = 1)+
+  geom_boxplot(notch = FALSE,  outlier.size = -1, color="black",lwd=1, alpha = 0.2,show.legend = F) + 
+   scale_fill_manual(values = c("STAD_CIN" = "#F39B7FFF", "STAD_EBV" ="#91D1C2FF","STAD_GS" = "#4DBBD5FF","STAD_MSI" ="#E64B35FF", "EMT" = "#A6CEE3", "MSI" ="#3C5488FF", "MSS_TP53neg" = "#8491B4FF", "MSS_TP53pos" ="#33A02C","High" = "#925E9FFF","Low" = "#EFC000FF")) + 
+  scale_x_discrete(labels = c("STAD_CIN" = "CIN", "STAD_EBV" ="EBV", "STAD_GS" = "GS","STAD_MSI" = "TCGA MSI","EMT"="EMT","MSI" = "ACRG MSI", "MSS_TP53neg" = "MSS TP53-","MSS_TP53pos" = "MSS TP53+","High" = "High","Low" = "Low"))  + 
+  ylab("CD274 (PD-L1) Expression") + 
+  ggtitle("Distribution of CD274 (PD-L1) Expression") +
+  theme_bw() +
+  theme(axis.text.x = element_text(colour="black", size = 14,angle = 45, hjust=1, vjust=1))  +
+  theme(axis.text.y = element_text(colour="black",size = 14)) + 
+  theme(plot.title = element_text(colour="black", size=14,hjust = 0, vjust=0)) +
+  theme(axis.title.x = element_blank()) +
+  theme(axis.title.y = element_text(colour="black", size=14)) +
+  theme(legend.position = "none")
+    
+ggsave("CD274_plot.svg", CD274_plot, width=5, height=3.5)
+
+
+#Num mutations plot
+
+num_mutations_plot = ggplot(data = DFSDSS_data_long,aes(x = reorder(Subtype, -num_mutations, FUN = median, na.rm = TRUE), y = num_mutations, fill = Subtype))+
+    geom_violin(alpha=0.4, scale = "width",size=1,color=NA, adjust=2.5) + 
+     ggbeeswarm::geom_quasirandom(method = "pseudorandom", shape = 21,size=2,dodge.width=0.75, width = 0.45, color="black",alpha=0.4,show.legend = F, bandwidth = 1)+
+  geom_boxplot(notch = FALSE,  outlier.size = -1, color="black",lwd=1, alpha = 0.2,show.legend = F) + 
+  scale_fill_manual(values = c("STAD_CIN" = "#F39B7FFF", "STAD_EBV" ="#91D1C2FF","STAD_GS" = "#4DBBD5FF","STAD_MSI" ="#E64B35FF", "EMT" = "#A6CEE3", "MSI" ="#3C5488FF", "MSS_TP53neg" = "#8491B4FF", "MSS_TP53pos" ="#33A02C","High" = "#925E9FFF","Low" = "#EFC000FF")) + 
+  scale_x_discrete(labels = c("STAD_CIN" = "CIN", "STAD_EBV" ="EBV", "STAD_GS" = "GS","STAD_MSI" = "TCGA MSI","EMT"="EMT","MSI" = "ACRG MSI", "MSS_TP53neg" = "MSS TP53-","MSS_TP53pos" = "MSS TP53+","High" = "High","Low" = "Low")) +
+  ylab("# of Mutations") + 
+  ggtitle("Distribution of Mutations (ACRG)") +
+  theme_bw() +
+  theme(axis.text.x = element_text(colour="black", size = 14,angle = 45, hjust=1, vjust=1))  +
+  theme(axis.text.y = element_text(colour="black",size = 14)) + 
+  theme(plot.title = element_text(colour="black", size=14,hjust = 0, vjust=0)) +
+  theme(axis.title.x = element_blank()) +
+  theme(axis.title.y = element_text(colour="black", size=14)) +
+  theme(legend.position = "none") 
+    
+ggsave("num_mutations.svg", num_mutations_plot, width=5, height=3.5)
+
+
+#PDCD1 plot
+
+PDCD1_plot = ggplot(data = DFSDSS_data_long,aes(x = reorder(Subtype, -PDCD1_combo, FUN = median, na.rm = TRUE), y = PDCD1_combo, fill = Subtype))+
+    geom_violin(alpha=0.4, scale = "width",size=1,color=NA, adjust=2.5) + 
+     ggbeeswarm::geom_quasirandom(method = "pseudorandom", shape = 21,size=2,dodge.width=0.75, width = 0.45, color="black",alpha=0.4,show.legend = F, bandwidth = 1)+
+  geom_boxplot(notch = FALSE,  outlier.size = -1, color="black",lwd=1, alpha = 0.2,show.legend = F) + 
+  scale_fill_manual(values = c("STAD_CIN" = "#F39B7FFF", "STAD_EBV" ="#91D1C2FF","STAD_GS" = "#4DBBD5FF","STAD_MSI" ="#E64B35FF", "EMT" = "#A6CEE3", "MSI" ="#3C5488FF", "MSS_TP53neg" = "#8491B4FF", "MSS_TP53pos" ="#33A02C","High" = "#925E9FFF","Low" = "#EFC000FF")) + 
+  scale_x_discrete(labels = c("STAD_CIN" = "CIN", "STAD_EBV" ="EBV", "STAD_GS" = "GS","STAD_MSI" = "TCGA MSI","EMT"="EMT","MSI" = "ACRG MSI", "MSS_TP53neg" = "MSS TP53-","MSS_TP53pos" = "MSS TP53+","High" = "High","Low" = "Low")) +
+  ylab("PDCD1 (PD-1) Expression") + 
+  ggtitle("Distribution of PDCD1 (PD-1) Expression") +
+  theme_bw() +
+  theme(axis.text.x = element_text(colour="black", size = 14,angle = 45, hjust=1, vjust=1))  +
+  theme(axis.text.y = element_text(colour="black",size = 14)) + 
+  theme(plot.title = element_text(colour="black", size=14,hjust = 0, vjust=0)) +
+  theme(axis.title.x = element_blank()) +
+  theme(axis.title.y = element_text(colour="black", size=14)) +
+  theme(legend.position = "none") 
+    
+ggsave("PDCD1_plot.svg", PDCD1_plot, width=5, height=3.5)
+
+```
+
+
+#Dunn test and wilcoxon Effect size comaprisons analysis 
+```{r}
+kruskal_test(data = DFSDSS_data_long, TMB_log~Subtype)
+TMB_dunn = dunn_test(data = DFSDSS_data_long, TMB_log~Subtype)
+write.csv(TMB_dunn, "TMB_dunn.csv")
+
+kruskal_test(data = DFSDSS_data_long, num_mutations~Subtype)
+num_mutations_dunn = dunn_test(data = DFSDSS_data_long, num_mutations~Subtype)
+write.csv(num_mutations_dunn, "num_mutations_dunn.csv")
+
+kruskal_test(data = DFSDSS_data_long, CD274_combo~Subtype)
+CD274_dunn = dunn_test(data = DFSDSS_data_long, CD274_combo~Subtype)
+write.csv(CD274_dunn, "CD274_dunn.csv")
+
+kruskal_test(data = DFSDSS_data_long, PDCD1_combo~Subtype)
+PDCD1_dunn = dunn_test(data = DFSDSS_data_long, PDCD1_combo~Subtype)
+write.csv(PDCD1_dunn, "PDCD1_dunn.csv")
+
+
+# TMB Pairwise Wilcoxon tests with BH correction
+DFSDSS_data_long$TMB_log = log(DFSDSS_data_long$TMB+1)
+
+wilcox_results <- DFSDSS_data_long %>%
+    pairwise_wilcox_test(
+        TMB_log ~ Subtype,
+        p.adjust.method = "BH", 
+        detailed = FALSE
+    )
+# Compute effect sizes (r = Z / sqrt(N))
+effect_sizes <- DFSDSS_data_long %>%
+    wilcox_effsize(TMB_log ~ Subtype)
+group_medians <- DFSDSS_data_long %>%
+  dplyr::group_by(Subtype) %>%
+  dplyr::summarise(median_val = median(TMB_log, na.rm = TRUE), .groups = "drop")
+final_results_TMB_log <- wilcox_results %>%
+  left_join(effect_sizes, by = c("group1","group2")) %>%
+  left_join(group_medians, by = c("group1" = "Subtype")) %>%
+  dplyr::rename(median_group1 = median_val) %>%
+  left_join(group_medians, by = c("group2" = "Subtype")) %>%
+  dplyr::rename(median_group2 = median_val) %>%
+  dplyr::mutate(
+    direction = case_when(
+      median_group1 > median_group2 ~ paste(group1, ">", group2),
+      median_group1 < median_group2 ~ paste(group2, ">", group1),
+      TRUE ~ "Equal"),
+    dominant = case_when(
+      median_group1 > median_group2 ~ group1,
+      median_group1 < median_group2 ~ group2,
+      TRUE ~ "Equal"
+    )
+  )
+
+
+# Num mutations Pairwise Wilcoxon tests with BH correction
+wilcox_results <- DFSDSS_data_long %>%
+    pairwise_wilcox_test(
+        num_mutations ~ Subtype,
+        p.adjust.method = "BH", 
+        detailed = FALSE
+    )
+# Compute effect sizes (r = Z / sqrt(N))
+effect_sizes <- DFSDSS_data_long %>%
+    wilcox_effsize(num_mutations ~ Subtype)
+group_medians <- DFSDSS_data_long %>%
+  dplyr::group_by(Subtype) %>%
+  dplyr::summarise(median_val = median(num_mutations, na.rm = TRUE), .groups = "drop")
+final_results_num_mutations <- wilcox_results %>%
+  left_join(effect_sizes, by = c("group1","group2")) %>%
+  left_join(group_medians, by = c("group1" = "Subtype")) %>%
+  dplyr::rename(median_group1 = median_val) %>%
+  left_join(group_medians, by = c("group2" = "Subtype")) %>%
+  dplyr::rename(median_group2 = median_val) %>%
+  dplyr::mutate(
+    direction = case_when(
+      median_group1 > median_group2 ~ paste(group1, ">", group2),
+      median_group1 < median_group2 ~ paste(group2, ">", group1),
+      TRUE ~ "Equal"),
+    dominant = case_when(
+      median_group1 > median_group2 ~ group1,
+      median_group1 < median_group2 ~ group2,
+      TRUE ~ "Equal"
+    )
+  )
+
+
+# PDCD1 Pairwise Wilcoxon tests with BH correction
+wilcox_results <- DFSDSS_data_long %>%
+    pairwise_wilcox_test(
+        PDCD1_combo ~ Subtype,
+        p.adjust.method = "BH", 
+        detailed = FALSE
+    )
+# Compute effect sizes (r = Z / sqrt(N))
+effect_sizes <- DFSDSS_data_long %>%
+    wilcox_effsize(PDCD1_combo ~ Subtype)
+group_medians <- DFSDSS_data_long %>%
+  dplyr::group_by(Subtype) %>%
+  dplyr::summarise(median_val = median(PDCD1_combo, na.rm = TRUE), .groups = "drop")
+final_results_PDCD1 <- wilcox_results %>%
+  left_join(effect_sizes, by = c("group1","group2")) %>%
+  left_join(group_medians, by = c("group1" = "Subtype")) %>%
+  dplyr::rename(median_group1 = median_val) %>%
+  left_join(group_medians, by = c("group2" = "Subtype")) %>%
+  dplyr::rename(median_group2 = median_val) %>%
+  dplyr::mutate(
+    direction = case_when(
+      median_group1 > median_group2 ~ paste(group1, ">", group2),
+      median_group1 < median_group2 ~ paste(group2, ">", group1),
+      TRUE ~ "Equal"),
+    dominant = case_when(
+      median_group1 > median_group2 ~ group1,
+      median_group1 < median_group2 ~ group2,
+      TRUE ~ "Equal"
+    )
+  )
+
+
+# CD274 Pairwise Wilcoxon tests with BH correction
+wilcox_results <- DFSDSS_data_long %>%
+    pairwise_wilcox_test(
+        CD274_combo ~ Subtype,
+        p.adjust.method = "BH", 
+        detailed = FALSE
+    )
+# Compute effect sizes (r = Z / sqrt(N))
+effect_sizes <- DFSDSS_data_long %>%
+    wilcox_effsize(CD274_combo ~ Subtype)
+group_medians <- DFSDSS_data_long %>%
+  dplyr::group_by(Subtype) %>%
+  dplyr::summarise(median_val = median(CD274_combo, na.rm = TRUE), .groups = "drop")
+final_results_CD274 <- wilcox_results %>%
+  left_join(effect_sizes, by = c("group1","group2")) %>%
+  left_join(group_medians, by = c("group1" = "Subtype")) %>%
+  dplyr::rename(median_group1 = median_val) %>%
+  left_join(group_medians, by = c("group2" = "Subtype")) %>%
+  dplyr::rename(median_group2 = median_val) %>%
+  dplyr::mutate(
+    direction = case_when(
+      median_group1 > median_group2 ~ paste(group1, ">", group2),
+      median_group1 < median_group2 ~ paste(group2, ">", group1),
+      TRUE ~ "Equal"),
+    dominant = case_when(
+      median_group1 > median_group2 ~ group1,
+      median_group1 < median_group2 ~ group2,
+      TRUE ~ "Equal"
+    )
+  )
+
+wilcoxon_effect_size = rbind(final_results_CD274, final_results_num_mutations)
+wilcoxon_effect_size = rbind(wilcoxon_effect_size, final_results_TMB_log)
+wilcoxon_effect_size = rbind(wilcoxon_effect_size, final_results_PDCD1)
+
+plot(as.factor(wilcoxon_effect_size$dominant), wilcoxon_effect_size$effsize)
+
+```
+
+#Stratified correlates by TME status 
+```{r}
+DFSDSS_data_long_2 <- DFSDSS_data %>%
+  pivot_longer(
+    cols = c(ACRG_subtype, TCGA_subtype),
+    names_to = "Subtype_Type",
+    values_to = "Subtype"
+  )
+DFSDSS_data_long_2$Subtype = factor(DFSDSS_data_long_2$Subtype, levels = c("STAD_CIN", "STAD_EBV", "STAD_GS","STAD_MSI", "EMT", "MSI", "MSS_TP53neg","MSS_TP53pos"))
+df_filtered = DFSDSS_data_long_2 %>% filter(!Subtype == "STAD_GS" & !Subtype == "EMT") %>% droplevels()
+################################
+#TMB stratification 
+################################
+df_filtered_TMB = df_filtered %>% filter(!is.na(TMB))
+df_filtered_TMB$TMB = log(df_filtered_TMB$TMB+1)
+df_filtered_TMB$TME_subtype_cal = factor(df_filtered_TMB$TME_subtype_cal, levels = c("High", "Low"))
+
+stat.test <- df_filtered_TMB %>%
+  group_by(Subtype) %>%
+  wilcox_test(TMB ~ TME_subtype_cal) %>%
+  adjust_pvalue(method = "BH") %>%
+  add_significance("p.adj")
+# Add p-values onto the box plots
+stat.test <- stat.test %>%
+  add_xy_position(x = "Subtype", dodge = 0.8)
+
+colorspace::adjust_transparency(col="#925E9FFF", alpha = c(0, 0.25, 1))
+colorspace::adjust_transparency(col="#EFC000FF", alpha = c(0, 0.25, 1))
+
+fill_colours = c("High"="#925E9F40", "Low" = "#EFC00040")
+point_colours = c("High"="#925E9FFF", "Low" = "#EFC000FF")
+
+# Create a box plot
+TMB_stratify_plot <- ggboxplot(
+  df_filtered_TMB, x = "Subtype", y = "TMB", 
+  fill = "TME_subtype_cal",color = "black", palette = fill_colours,
+  add = "jitter",shape = "Subtype",
+  add.params = list(
+            shape = 21, 
+            size = 1.75,          # size of points
+            alpha = 0.25,       # transparency
+            width = 0.4)
+  ) +
+  stat_pvalue_manual(
+  stat.test,  
+  size = 5,
+  label = "{p.adj.signif}", 
+  tip.length = 0
+  ) + 
+  scale_x_discrete(labels = c("STAD_CIN" = "CIN", "STAD_EBV" ="EBV", "STAD_GS" = "GS","STAD_MSI" = "TCGA MSI","EMT"="EMT","MSI" = "ACRG MSI", "MSS_TP53neg" = "MSS TP53-","MSS_TP53pos" = "MSS TP53+","High" = "High","Low" = "Low")) +
+  ggtitle("TME High vs. Low: TMB") +
+  ylab("log(TMB+1) (TCGA)")+
+  ylim(0,6.3) +
+  theme_classic() +
+  theme(axis.text.x = element_text(colour="black", size = 13,angle = 45, hjust=1, vjust=1))  +
+  theme(axis.text.y = element_text(colour="black",size = 13)) + 
+  theme(plot.title = element_text(colour="black", size=13,hjust = 0, vjust=0)) +
+  theme(axis.title.x = element_blank()) +
+  theme(axis.title.y = element_text(colour="black", size=13)) +
+  theme(legend.position = "none") 
+
+ggsave("TMB_stratify_plot.svg", TMB_stratify_plot, width=3.5, height=3)
+
+################################
+#Num Mutations stratification 
+################################
+df_filtered_num_mutations = df_filtered %>% filter(!is.na(num_mutations))
+df_filtered_num_mutations$TME_subtype_cal = factor(df_filtered_num_mutations$TME_subtype_cal, levels = c("High", "Low"))
+
+stat.test <- df_filtered_num_mutations %>%
+  group_by(Subtype) %>%
+  wilcox_test(num_mutations ~ TME_subtype_cal) %>%
+  adjust_pvalue(method = "BH") %>%
+  add_significance("p.adj")
+# Add p-values onto the box plots
+stat.test <- stat.test %>%
+  add_xy_position(x = "Subtype", dodge = 0.8)
+
+colorspace::adjust_transparency(col="#925E9FFF", alpha = c(0, 0.25, 1))
+colorspace::adjust_transparency(col="#EFC000FF", alpha = c(0, 0.25, 1))
+
+fill_colours = c("High"="#925E9F40", "Low" = "#EFC00040")
+point_colours = c("High"="#925E9FFF", "Low" = "#EFC000FF")
+
+# Create a box plot
+num_mutation_stratify_plot <- ggboxplot(
+  df_filtered_num_mutations, x = "Subtype", y = "num_mutations", 
+  fill = "TME_subtype_cal",color = "black", palette = fill_colours,
+  add = "jitter",shape = "Subtype",
+  add.params = list(
+            shape = 21, 
+            size = 1.75,          # size of points
+            alpha = 0.25,       # transparency
+            width = 0.4)
+  ) +
+  stat_pvalue_manual(
+  stat.test,  
+  size = 5,
+  label = "{p.adj.signif}", 
+  tip.length = 0
+  ) + 
+  scale_x_discrete(labels = c("STAD_CIN" = "CIN", "STAD_EBV" ="EBV", "STAD_GS" = "GS","STAD_MSI" = "TCGA MSI","EMT"="EMT","MSI" = "ACRG MSI", "MSS_TP53neg" = "MSS TP53-","MSS_TP53pos" = "MSS TP53+","High" = "High","Low" = "Low")) +
+  ggtitle("TME High vs. Low: # Mutations") +
+  ylab("# Mutations (ACRG)")+
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.1))) +
+  theme_classic() +
+  theme(axis.text.x = element_text(colour="black", size = 13,angle = 45, hjust=1, vjust=1))  +
+  theme(axis.text.y = element_text(colour="black",size = 13)) + 
+  theme(plot.title = element_text(colour="black", size=13,hjust = 0, vjust=0)) +
+  theme(axis.title.x = element_blank()) +
+  theme(axis.title.y = element_text(colour="black", size=13)) +
+  theme(legend.position = "none") 
+
+ggsave("num_mutation_stratify_plot.svg", num_mutation_stratify_plot, width=3.5, height=3)
+
+################################
+#PDCD1 stratification 
+################################
+df_filtered_PDCD1 = df_filtered %>% filter(!is.na(PDCD1_combo))
+df_filtered_PDCD1$TME_subtype_cal = factor(df_filtered_PDCD1$TME_subtype_cal, levels = c("High", "Low"))
+
+stat.test <- df_filtered_PDCD1 %>%
+  group_by(Subtype) %>%
+  wilcox_test(PDCD1_combo ~ TME_subtype_cal) %>%
+  adjust_pvalue(method = "BH") %>%
+  add_significance("p.adj")
+# Add p-values onto the box plots
+stat.test <- stat.test %>%
+  add_xy_position(x = "Subtype", dodge = 0.8)
+
+colorspace::adjust_transparency(col="#925E9FFF", alpha = c(0, 0.25, 1))
+colorspace::adjust_transparency(col="#EFC000FF", alpha = c(0, 0.25, 1))
+
+fill_colours = c("High"="#925E9F40", "Low" = "#EFC00040")
+point_colours = c("High"="#925E9FFF", "Low" = "#EFC000FF")
+
+# Create a box plot
+PDCD1_stratify_plot <- ggboxplot(
+  df_filtered_PDCD1, x = "Subtype", y = "PDCD1_combo", 
+  fill = "TME_subtype_cal",color = "black", palette = fill_colours,
+  add = "jitter",shape = "Subtype",
+  add.params = list(
+            shape = 21, 
+            size = 1.75,          # size of points
+            alpha = 0.25,       # transparency
+            width = 0.4)
+  ) +
+  stat_pvalue_manual(
+  stat.test,  
+  size = 5,
+  label = "{p.adj.signif}", 
+  tip.length = 0
+  ) + 
+  scale_x_discrete(labels = c("STAD_CIN" = "CIN", "STAD_EBV" ="EBV", "STAD_GS" = "GS","STAD_MSI" = "TCGA MSI","EMT"="EMT","MSI" = "ACRG MSI", "MSS_TP53neg" = "MSS TP53-","MSS_TP53pos" = "MSS TP53+","High" = "High","Low" = "Low")) +
+  ggtitle("TME High vs. Low: PDCD1 (PD-1)") +
+  ylab("PDCD1 (PD-1)")+
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.1))) +
+  theme_classic() +
+  theme(axis.text.x = element_text(colour="black", size = 13,angle = 45, hjust=1, vjust=1))  +
+  theme(axis.text.y = element_text(colour="black",size = 13)) + 
+  theme(plot.title = element_text(colour="black", size=13,hjust = 0, vjust=0)) +
+  theme(axis.title.x = element_blank()) +
+  theme(axis.title.y = element_text(colour="black", size=13)) +
+  theme(legend.position = "none") 
+
+ggsave("PDCD1_stratify_plot.svg", PDCD1_stratify_plot, width=3.5, height=3)
+
+################################
+#CD274 stratification 
+################################
+df_filtered_CD274 = df_filtered %>% filter(!is.na(CD274_combo))
+df_filtered_CD274$TME_subtype_cal = factor(df_filtered_CD274$TME_subtype_cal, levels = c("High", "Low"))
+
+stat.test <- df_filtered_CD274 %>%
+  group_by(Subtype) %>%
+  wilcox_test(CD274_combo ~ TME_subtype_cal) %>%
+  adjust_pvalue(method = "BH") %>%
+  add_significance("p.adj")
+# Add p-values onto the box plots
+stat.test <- stat.test %>%
+  add_xy_position(x = "Subtype", dodge = 0.8)
+
+colorspace::adjust_transparency(col="#925E9FFF", alpha = c(0, 0.25, 1))
+colorspace::adjust_transparency(col="#EFC000FF", alpha = c(0, 0.25, 1))
+
+fill_colours = c("High"="#925E9F40", "Low" = "#EFC00040")
+point_colours = c("High"="#925E9FFF", "Low" = "#EFC000FF")
+
+# Create a box plot
+CD274_combo_stratify_plot <- ggboxplot(
+  df_filtered_CD274, x = "Subtype", y = "CD274_combo", 
+  fill = "TME_subtype_cal",color = "black", palette = fill_colours,
+  add = "jitter",shape = "Subtype",
+  add.params = list(
+            shape = 21, 
+            size = 1.75,          # size of points
+            alpha = 0.25,       # transparency
+            width = 0.4)
+  ) +
+  stat_pvalue_manual(
+  stat.test,  
+  size = 5,
+  label = "{p.adj.signif}", 
+  tip.length = 0
+  ) + 
+  scale_x_discrete(labels = c("STAD_CIN" = "CIN", "STAD_EBV" ="EBV", "STAD_GS" = "GS","STAD_MSI" = "TCGA MSI","EMT"="EMT","MSI" = "ACRG MSI", "MSS_TP53neg" = "MSS TP53-","MSS_TP53pos" = "MSS TP53+","High" = "High","Low" = "Low")) +
+  ggtitle("TME High vs. Low: CD274 (PD-L1)") +
+  ylab("CD274 (PD-L1)")+
+  scale_y_continuous(expand = expansion(mult = c(0.05, 0.1))) +
+  theme_classic() +
+  theme(axis.text.x = element_text(colour="black", size = 13,angle = 45, hjust=1, vjust=1))  +
+  theme(axis.text.y = element_text(colour="black",size = 13)) + 
+  theme(plot.title = element_text(colour="black", size=13,hjust = 0, vjust=0)) +
+  theme(axis.title.x = element_blank()) +
+  theme(axis.title.y = element_text(colour="black", size=13)) +
+  theme(legend.position = "none") 
+
+ggsave("CD274_combo_stratify_plot.svg", CD274_combo_stratify_plot, width=3.5, height=3)
+```
+
+#Univariate survival of correlates DFI and DSS
+```{r}
+#DFI****
+multivariate_cox = coxph(Surv(DFS_time, DFS_status) ~ log(TMB+1) , data = DFSDSS_data)
+summary(multivariate_cox)
+multivariate_cox_table = tbl_regression(multivariate_cox, exponentiate = TRUE)%>% add_n() %>% add_nevent()
+multivariate_cox_table = as_flex_table(
+  multivariate_cox_table,
+  include = everything(),
+  return_calls = FALSE)
+multivariate_cox_table
+
+save_as_docx("tb_overall" = multivariate_cox_table,path = "univariate_correlates.docx")
+
+
+
+multivariate_cox = coxph(Surv(DFS_time, DFS_status) ~ num_mutations , data = DFSDSS_data)
+summary(multivariate_cox)
+multivariate_cox_table = tbl_regression(multivariate_cox, exponentiate = TRUE)%>% add_n() %>% add_nevent()
+multivariate_cox_table = as_flex_table(
+  multivariate_cox_table,
+  include = everything(),
+  return_calls = FALSE)
+multivariate_cox_table
+
+multivariate_cox = coxph(Surv(DFS_time, DFS_status) ~ CD274_combo, data = DFSDSS_data)
+summary(multivariate_cox)
+multivariate_cox_table = tbl_regression(multivariate_cox, exponentiate = TRUE)%>% add_n() %>% add_nevent()
+multivariate_cox_table = as_flex_table(
+  multivariate_cox_table,
+  include = everything(),
+  return_calls = FALSE)
+multivariate_cox_table
+
+
+multivariate_cox = coxph(Surv(DFS_time, DFS_status) ~ PDCD1_combo, data = DFSDSS_data)
+summary(multivariate_cox)
+multivariate_cox_table = tbl_regression(multivariate_cox, exponentiate = TRUE) %>% add_n() %>% add_nevent()
+multivariate_cox_table = as_flex_table(
+  multivariate_cox_table,
+  include = everything(),
+  return_calls = FALSE)
+multivariate_cox_table
+
+#DSS******
+
+
+multivariate_cox = coxph(Surv(DSS_time, DSS_status) ~ log(TMB+1) , data = DFSDSS_data)
+summary(multivariate_cox)
+multivariate_cox_table = tbl_regression(multivariate_cox, exponentiate = TRUE)%>% add_n() %>% add_nevent()
+multivariate_cox_table = as_flex_table(
+  multivariate_cox_table,
+  include = everything(),
+  return_calls = FALSE)
+multivariate_cox_table
+
+multivariate_cox = coxph(Surv(DSS_time, DSS_status) ~ num_mutations , data = DFSDSS_data)
+summary(multivariate_cox)
+multivariate_cox_table = tbl_regression(multivariate_cox, exponentiate = TRUE)%>% add_n() %>% add_nevent()
+multivariate_cox_table = as_flex_table(
+  multivariate_cox_table,
+  include = everything(),
+  return_calls = FALSE)
+multivariate_cox_table
+
+multivariate_cox = coxph(Surv(DSS_time, DSS_status) ~ CD274_combo, data = DFSDSS_data)
+summary(multivariate_cox)
+multivariate_cox_table = tbl_regression(multivariate_cox, exponentiate = TRUE)%>% add_n() %>% add_nevent()
+multivariate_cox_table = as_flex_table(
+  multivariate_cox_table,
+  include = everything(),
+  return_calls = FALSE)
+multivariate_cox_table
+
+
+multivariate_cox = coxph(Surv(DSS_time, DSS_status) ~ PDCD1_combo, data = DFSDSS_data)
+summary(multivariate_cox)
+multivariate_cox_table = tbl_regression(multivariate_cox, exponentiate = TRUE) %>% add_n() %>% add_nevent()
+multivariate_cox_table = as_flex_table(
+  multivariate_cox_table,
+  include = everything(),
+  return_calls = FALSE)
+multivariate_cox_table
+```
+#Assessment of proportion of recurrences per subtype
+```{r}
+library(ggmosaic)
+DFSDSS_data$recurrence_status_binary = factor(DFSDSS_data$recurrence_status_binary, levels =c("yes", "no"))
+
+data_fig = DFSDSS_data_long
+data_fig$Subtype = factor(data_fig$Subtype, levels =c("EMT","Low","STAD_GS","MSS_TP53neg","STAD_CIN", "MSS_TP53pos","STAD_EBV", "MSI","STAD_MSI","High"))
+data_fig$recurrence_status_binary = factor(data_fig$recurrence_status_binary, levels =c("yes", "no"))
+
+#Recurrence binary by study 
+table2 <-
+  tbl_summary(
+    DFSDSS_data,
+    include = c("study"),
+    by = recurrence_status_binary, # split table by group
+    percent = "row",
+    missing = "no" # don't list missing data separately
+  ) %>%
+  add_p()
+table2 = as_flex_table(
+  table2,
+  include = everything(),
+  return_calls = FALSE,
+  strip_md_bold = TRUE
+)
+save_as_docx("table2" = table2,path = "recurrence_binary_study.docx")
+
+#Recurrence binary by subtype 
+table2 <-
+  tbl_summary(
+    DFSDSS_data_long,
+    include = c("Subtype"),
+    by = recurrence_status_binary, # split table by group
+    percent = "row",
+    missing = "no" # don't list missing data separately
+  ) %>%
+  add_p()
+table2 = as_flex_table(
+  table2,
+  include = everything(),
+  return_calls = FALSE,
+  strip_md_bold = TRUE
+)
+save_as_docx("table2" = table2,path = "recurrence_binary_subtype.docx")
+
+#Recurrence binary by subtype and study 
+table2 <-
+  tbl_summary(
+    DFSDSS_data_long[DFSDSS_data_long$study=="ACRG",],
+    include = c("Subtype"),
+    by = recurrence_status_binary, # split table by group
+    percent = "row",
+    missing = "no" # don't list missing data separately
+  ) %>%
+  add_p(test.args = all_tests("fisher.test") ~ list(simulate.p.value = TRUE))
+table2 = as_flex_table(
+  table2,
+  include = everything(),
+  return_calls = FALSE,
+  strip_md_bold = TRUE
+)
+save_as_docx("table2" = table2,path = "recurrence_binary_subtype_ACRG.docx")
+
+#Recurrence binary by subtype and study 
+table2 <-
+  tbl_summary(
+    DFSDSS_data_long[DFSDSS_data_long$study=="TCGA",],
+    include = c("Subtype"),
+    by = recurrence_status_binary, # split table by group
+    percent = "row",
+    missing = "no" # don't list missing data separately
+  ) %>%
+  add_p(test.args = all_tests("fisher.test") ~ list(simulate.p.value = TRUE))
+table2 = as_flex_table(
+  table2,
+  include = everything(),
+  return_calls = FALSE,
+  strip_md_bold = TRUE
+)
+save_as_docx("table2" = table2,path = "recurrence_binary_subtype_TCGA.docx")
+
+
+chisq.test(table(data_fig$recurrence_status_binary, data_fig$Subtype))
+
+mosaic_recurrence = 
+data_fig %>% filter(!is.na(recurrence_status_binary))  %>% 
+  ggplot(data = .) +
+  geom_mosaic(aes(x = product(recurrence_status_binary, Subtype), fill = recurrence_status_binary)) +
+  geom_hline(yintercept = 0.2829828, size=1,linetype = 2, color = "grey40") + 
+  geom_mosaic_text(aes(x = product(recurrence_status_binary, Subtype), label = after_stat(.wt)), size=6, as.label=TRUE) + 
+  labs(x = "Subtype", y = "Proportion", title = "Marimekko Chart") +
+  scale_x_productlist(labels = c("EMT"= "EMT","Low"= "Low","STAD_GS" = "GS","MSS_TP53neg" = "MSS TP53-","STAD_CIN"="CIN", "MSS_TP53pos" = "MSS TP53+","STAD_EBV" = "EBV", "MSI" = "ACRG MSI","STAD_MSI" = "TCGA MSI","High"= "High"))  +
+  scale_fill_manual("Recurrence", labels = c("Yes", "No"), values= c("#B2182B", "#4393C3")) +
+  ggtitle("Proportion of Distant vs. Local Recurrence by Subtype") +
+  theme_transparent() +
+  theme(axis.text.x = element_blank())  +
+  theme(axis.text.y = element_blank()) + 
+  theme(plot.title = element_text(colour="black",size = 18)) +
+  theme(legend.text = element_text(colour="black",size = 18)) +
+  theme(legend.title = element_text(colour="black",size = 18)) +
+  theme(axis.text.x = element_text(size = 18,colour="black", angle = 45, hjust = 1, vjust = 1))+
+  theme(axis.title.y = element_blank()) +
+  theme(legend.position = "bottom") 
+
+ggsave("mosaic_recurrence_binary.svg", mosaic_recurrence, width=12, height=5)
+
+```
+#Assessment of location of recurrences per subtype
+```{r}
+library(ggmosaic)
+
+data_fig = DFSDSS_data_long
+data_fig$Subtype = factor(data_fig$Subtype, levels =c("MSS_TP53pos","STAD_GS","STAD_CIN", "Low", "MSS_TP53neg","EMT","High", "MSI", "STAD_EBV","STAD_MSI"))
+
+
+#Recurrence type by study 
+table2 <-
+  tbl_summary(
+    DFSDSS_data,
+    include = c("study"),
+    by = recurrence_site_combo, # split table by group
+    percent = "row",
+    missing = "no" # don't list missing data separately
+  ) %>%
+  add_p(test.args = all_tests("fisher.test") ~ list(simulate.p.value = TRUE))
+table2 = as_flex_table(
+  table2,
+  include = everything(),
+  return_calls = FALSE,
+  strip_md_bold = TRUE
+)
+save_as_docx("table2" = table2,path = "recurrence_site_study.docx")
+
+#Recurrence binary by subtype 
+table2 <-
+  tbl_summary(
+    DFSDSS_data_long,
+    include = c("Subtype"),
+    by = recurrence_site_combo, # split table by group
+    percent = "row",
+    missing = "no" # don't list missing data separately
+  ) %>%
+  add_p(test.args = all_tests("fisher.test") ~ list(simulate.p.value = TRUE))
+table2 = as_flex_table(
+  table2,
+  include = everything(),
+  return_calls = FALSE,
+  strip_md_bold = TRUE
+)
+save_as_docx("table2" = table2,path = "recurrence_site_subtype.docx")
+
+#Recurrence binary by subtype and study 
+table2 <-
+  tbl_summary(
+    DFSDSS_data_long[DFSDSS_data_long$study=="ACRG",],
+    include = c("Subtype"),
+    by = recurrence_site_combo, # split table by group
+    percent = "row",
+    missing = "no" # don't list missing data separately
+  ) %>%
+  add_p(test.args = all_tests("fisher.test") ~ list(simulate.p.value = TRUE))
+table2 = as_flex_table(
+  table2,
+  include = everything(),
+  return_calls = FALSE,
+  strip_md_bold = TRUE
+)
+save_as_docx("table2" = table2,path = "recurrence_site_subtype_ACRG.docx")
+
+#Recurrence binary by subtype and study 
+table2 <-
+  tbl_summary(
+    DFSDSS_data_long[DFSDSS_data_long$study=="TCGA",],
+    include = c("Subtype"),
+    by = recurrence_site_combo, # split table by group
+    percent = "row",
+    missing = "no" # don't list missing data separately
+  ) %>%
+  add_p(test.args = all_tests("fisher.test") ~ list(simulate.p.value = TRUE))
+table2 = as_flex_table(
+  table2,
+  include = everything(),
+  return_calls = FALSE,
+  strip_md_bold = TRUE
+)
+save_as_docx("table2" = table2,path = "recurrence_site_subtype_TCGA.docx")
+
+chisq.test(table(data_fig$recurrence_site_combo, data_fig$Subtype))
+
+mosaic_recurrence = 
+data_fig %>% filter(!is.na(recurrence_site_combo))  %>% 
+  ggplot(data = .) +
+  geom_mosaic(aes(x = product(recurrence_site_combo, Subtype), fill = recurrence_site_combo)) +
+  geom_hline(yintercept = 0.7635135, size=1,linetype = 2, color = "grey40") + 
+  geom_mosaic_text(aes(x = product(recurrence_site_combo, Subtype), label = after_stat(.wt)), size=6, as.label=TRUE) + 
+  labs(x = "Subtype", y = "Proportion", title = "Marimekko Chart") +
+  scale_x_productlist(labels = c("MSS_TP53pos" = "MSS TP53+","STAD_GS" = "GS","STAD_CIN"="CIN", "Low"= "Low", "MSS_TP53neg" = "MSS TP53-","EMT"= "EMT","High"= "High", "MSI" = "ACRG MSI", "STAD_EBV" = "EBV","STAD_MSI" = "TCGA MSI"))  +
+  scale_fill_manual("Recurrence",values= c("#8FBCBB", "#5E81AC")) +
+  ggtitle("Proportion of Distant vs. Local Recurrence by Subtype") +
+  theme_transparent() +
+  theme(axis.text.x = element_blank())  +
+  theme(axis.text.y = element_blank()) + 
+  theme(plot.title = element_text(colour="black",size = 18)) +
+  theme(legend.text = element_text(colour="black",size = 18)) +
+  theme(legend.title = element_text(colour="black",size = 18)) +
+  theme(axis.text.x = element_text(size = 18,colour="black", angle = 45, hjust = 1, vjust = 1))+
+  theme(axis.title.y = element_blank()) +
+  theme(legend.position = "bottom") 
+
+ggsave("mosaic_recurrence.svg", mosaic_recurrence, width=12, height=5)
+
+```
+
+
+#TME proportions
+```{r}
+tme_prop_cal = as.data.frame(table(DFSDSS_data$TME_subtype_cal,DFSDSS_data$TCGA_subtype))
+tme_prop_acrg_cal = as.data.frame(table(DFSDSS_data$TME_subtype_cal,DFSDSS_data$ACRG_subtype))
+
+
+TME_proportions_fisher_plot = rbind(tme_prop_cal,tme_prop_acrg_cal)
+  
+replacements <- c("STAD_CIN" = "CIN", "STAD_EBV" = "EBV", "STAD_GS" = "GS", "STAD_MSI" = "TCGA MSI","MSI" = "ACRG MSI", "EMT" = "EMT", "MSS_TP53neg" = "MSS TP53-", "MSS_TP53pos" = "MSS TP53+")
+TME_proportions_fisher_plot <- TME_proportions_fisher_plot %>%
+  mutate(Var2 = recode(Var2, !!!replacements))
+ 
+level_order = c("EBV" , "TCGA MSI", "ACRG MSI", "MSS TP53+","CIN", "MSS TP53-", "GS", "EMT")
+level_order_rev = rev(level_order)
+
+TME_proportions_fisher_plot$Var1 = factor(TME_proportions_fisher_plot$Var1, levels = c("High", "Low"))
+
+tme_prop_allsubtypes_rfs = ggplot(TME_proportions_fisher_plot, aes(fill=Var1, y=Freq, x=factor(Var2, level=level_order_rev))) +
+  geom_bar(position="fill", stat="identity", alpha=0.8, width = 0.75, colour="black") + 
+  coord_flip() + 
+  scale_fill_manual("TME Subtype", values = c("Low" = "#EFC000FF", "High" = "#925E9FFF")) + 
+  ggtitle("Proportion of TME Subtypes per Class") + 
+  xlab("Subtype Class") + 
+  ylab("Proportion") +
+  theme_classic()  + 
+  theme(axis.text.x = element_text(colour="black", size = 16)) +
+  theme(axis.text.y = element_text(colour="black",size = 16)) + 
+  theme(plot.title = element_text(colour="black", size=16)) +
+  theme(axis.title.x = element_text(colour="black", size =16)) +
+  theme(axis.title.y = element_text(colour="black", size=16)) +
+  theme(legend.title = element_text(color = "black", size = 16),
+        legend.position = "bottom",
+        legend.text = element_text(color = "black", size = 16)) 
+
+ggsave("tme_prop_allsubtypes_dfs.svg", tme_prop_allsubtypes_rfs, width=5.5, height=4)
+
+```
+
+#****Individual KM curves by TME status
+#high vs low for CIN
+```{r}
+summary(coxph(Surv(DFS_time, DFS_status) ~ TME_subtype_cal, data = DFSDSS_data[DFSDSS_data$TCGA_subtype=="STAD_CIN",]))
+
+ggsurvplot(survfit(Surv(DFS_time, DFS_status) ~ TME_subtype_cal, data = DFSDSS_data[DFSDSS_data$TCGA_subtype=="STAD_CIN",]))
+
+DFSDSS_data$TME_subtype_cal = factor(DFSDSS_data$TME_subtype_cal, levels = c("High", "Low"))
+
+tme_cin_km = ggsurvplot(survfit(Surv(DFS_time, DFS_status) ~ TME_subtype_cal, data = DFSDSS_data[DFSDSS_data$TCGA_subtype=="STAD_CIN",]),
+           pval= "Logrank test \n p < 0.001", 
+           pval.coord = c(0.1, 0.2),
+           palette = c("#925E9FFF","#EFC000FF"),
+           break.time.by = 24,
+           xlab = "Time (months)",
+           ylab = "DFI Probability",
+           title = "CIN-TME Effect",
+           legend = "none",
+           legend.title = "Molecular subtype",
+           legend.labs=c("CIN, TME High", "CIN, TME Low"),
+           font.legend = c(12, "plain", "black"),
+           font.main = c(14, "plain", "black"),
+           surv.plot.height = 0.75)
+
+
+svg(filename="tme_cin_km_dfs_paper.svg", width=3, height=3)
+tme_cin_km
+dev.off()
+
+DFSDSS_data$TME_subtype_cal = factor(DFSDSS_data$TME_subtype_cal, levels = c("Low", "High")) ###CHANGE LEVELS BACK
+
+```
+#high vs low for tcga MSI
+```{r}
+summary(coxph(Surv(DFS_time, DFS_status) ~ TME_subtype_cal, data = DFSDSS_data[DFSDSS_data$TCGA_subtype=="STAD_MSI",]))
+
+ggsurvplot(survfit(Surv(DFS_time, DFS_status) ~ TME_subtype_cal, data = DFSDSS_data[DFSDSS_data$TCGA_subtype=="STAD_MSI",]))
+
+DFSDSS_data$TME_subtype_cal = factor(DFSDSS_data$TME_subtype_cal, levels = c("High", "Low"))
+
+tme_msi_km = ggsurvplot(survfit(Surv(DFS_time, DFS_status) ~ TME_subtype_cal, data = DFSDSS_data[DFSDSS_data$TCGA_subtype=="STAD_MSI",]),
+           pval= "Logrank test \n p = 0.05", 
+           pval.coord = c(0.1, 0.2),
+           palette = c("#925E9FFF","#EFC000FF"),
+           break.time.by = 24,
+           xlab = "Time (months)",
+           ylab = "DFI Probability",
+           title = "TCGA MSI-TME Effect",
+           legend = "none",
+           legend.title = "Molecular subtype",
+           legend.labs=c("MSI, TME High", "MSI, TME Low"),
+           font.legend = c(12, "plain", "black"),
+           font.main = c(14, "plain", "black"),
+           surv.plot.height = 0.75)
+
+
+svg(filename="tme_tcgamsi_km_dfs_paper.svg", width=3, height=3)
+tme_msi_km
+dev.off()
+
+DFSDSS_data$TME_subtype_cal = factor(DFSDSS_data$TME_subtype_cal, levels = c("Low", "High")) ###CHANGE LEVELS BACK
+
+```
+#high vs low for EBV
+```{r}
+summary(coxph(Surv(DFS_time, DFS_status) ~ TME_subtype_cal, data = DFSDSS_data[DFSDSS_data$TCGA_subtype=="STAD_EBV",]))
+
+ggsurvplot(survfit(Surv(DFS_time, DFS_status) ~ TME_subtype_cal, data = DFSDSS_data[DFSDSS_data$TCGA_subtype=="STAD_EBV",]))
+
+DFSDSS_data$TME_subtype_cal = factor(DFSDSS_data$TME_subtype_cal, levels = c("High", "Low"))
+
+tme_ebv_km = ggsurvplot(survfit(Surv(DFS_time, DFS_status) ~ TME_subtype_cal, data = DFSDSS_data[DFSDSS_data$TCGA_subtype=="STAD_EBV",]),
+           pval= "Logrank test \n p = 0.70", 
+           pval.coord = c(0.1, 0.2),
+           palette = c("#925E9FFF","#EFC000FF"),
+           break.time.by = 24,
+           xlab = "Time (months)",
+           ylab = "DFI Probability",
+           title = "EBV-TME Effect",
+           legend = "none",
+           legend.title = "Molecular subtype",
+           legend.labs=c("EBV, TME High", "EBV, TME Low"),
+           font.legend = c(12, "plain", "black"),
+           font.main = c(14, "plain", "black"),
+           surv.plot.height = 0.75)
+
+svg(filename="tme_ebv_km_dfs_paper.svg", width=3, height=3)
+tme_ebv_km
+dev.off()
+
+DFSDSS_data$TME_subtype_cal = factor(DFSDSS_data$TME_subtype_cal, levels = c("Low", "High")) ###CHANGE LEVELS BACK
+
+```
+
+#high vs low for acrg MSI
+```{r}
+summary(coxph(Surv(DFS_time, DFS_status) ~ TME_subtype_cal, data = DFSDSS_data[DFSDSS_data$ACRG_subtype=="MSI",]))
+
+ggsurvplot(survfit(Surv(DFS_time, DFS_status) ~ TME_subtype_cal, data = DFSDSS_data[DFSDSS_data$ACRG_subtype=="MSI",]))
+
+DFSDSS_data$TME_subtype_cal = factor(DFSDSS_data$TME_subtype_cal, levels = c("High", "Low"))
+
+tme_msi_km = ggsurvplot(survfit(Surv(DFS_time, DFS_status) ~ TME_subtype_cal, data = DFSDSS_data[DFSDSS_data$ACRG_subtype=="MSI",]),
+           pval= "Logrank test \n p < 0.03", 
+           pval.coord = c(0.1, 0.2),
+           palette = c("#925E9FFF","#EFC000FF"),
+           break.time.by = 24,
+           xlab = "Time (months)",
+           ylab = "DFI Probability",
+           title = "ACRG MSI-TME Effect",
+           legend = "none",
+           legend.title = "Molecular subtype",
+           legend.labs=c("MSI, TME High", "MSI, TME Low"),
+           font.legend = c(12, "plain", "black"),
+           font.main = c(14, "plain", "black"),
+           surv.plot.height = 0.75) 
+           
+
+svg(filename="tme_msi_km_dfs_paper.svg", width=3, height=3)
+tme_msi_km
+dev.off()
+
+DFSDSS_data$TME_subtype_cal = factor(DFSDSS_data$TME_subtype_cal, levels = c("Low", "High")) ###CHANGE LEVELS BACK
+```
+
+#high vs low for acrg MSS TP53pos
+```{r}
+summary(coxph(Surv(DFS_time, DFS_status) ~ TME_subtype_cal, data = DFSDSS_data[DFSDSS_data$ACRG_subtype=="MSS_TP53pos",]))
+
+ggsurvplot(survfit(Surv(DFS_time, DFS_status) ~ TME_subtype_cal, data = DFSDSS_data[DFSDSS_data$ACRG_subtype=="MSS_TP53pos",]))
+
+DFSDSS_data$TME_subtype_cal = factor(DFSDSS_data$TME_subtype_cal, levels = c("High", "Low"))
+
+tme_MSS_TP53pos_km = ggsurvplot(survfit(Surv(DFS_time, DFS_status) ~ TME_subtype_cal, data = DFSDSS_data[DFSDSS_data$ACRG_subtype=="MSS_TP53pos",]),
+           pval= "Logrank test \n p = 0.06", 
+           pval.coord = c(0.1, 0.2),
+           palette = c("#925E9FFF","#EFC000FF"),
+           break.time.by = 24,
+           xlab = "Time (months)",
+           ylab = "DFI Probability",
+           title = "MSS TP53+ TME Effect",
+           legend = "none",
+           legend.title = "Molecular subtype",
+           legend.labs=c("MSS TP53+, TME High", "MSS TP53+, TME Low"),
+           font.legend = c(12, "plain", "black"),
+           font.main = c(14, "plain", "black"),
+           surv.plot.height = 0.75) 
+           
+
+svg(filename="tme_MSS_TP53pos_km_dfs_paper.svg", width=3, height=3)
+tme_MSS_TP53pos_km
+dev.off()
+
+DFSDSS_data$TME_subtype_cal = factor(DFSDSS_data$TME_subtype_cal, levels = c("Low", "High")) ###CHANGE LEVELS BACK
+```
+
+#high vs low for acrg MSS TP53neg
+```{r}
+summary(coxph(Surv(DFS_time, DFS_status) ~ TME_subtype_cal, data = DFSDSS_data[DFSDSS_data$ACRG_subtype=="MSS_TP53neg",]))
+
+ggsurvplot(survfit(Surv(DFS_time, DFS_status) ~ TME_subtype_cal, data = DFSDSS_data[DFSDSS_data$ACRG_subtype=="MSS_TP53neg",]))
+
+DFSDSS_data$TME_subtype_cal = factor(DFSDSS_data$TME_subtype_cal, levels = c("High", "Low"))
+
+tme_MSS_TP53pos_km = ggsurvplot(survfit(Surv(DFS_time, DFS_status) ~ TME_subtype_cal, data = DFSDSS_data[DFSDSS_data$ACRG_subtype=="MSS_TP53neg",]),
+           pval= "Logrank test \n p < 0.05", 
+           pval.coord = c(0.1, 0.2),
+           palette = c("#925E9FFF","#EFC000FF"),
+           break.time.by = 24,
+           xlab = "Time (months)",
+           ylab = "DFI Probability",
+           title = "MSS TP53- TME Effect",
+           legend = "none",
+           legend.title = "Molecular subtype",
+           legend.labs=c("MSS TP53-, TME High", "MSS TP53-, TME Low"),
+           font.legend = c(12, "plain", "black"),
+           font.main = c(14, "plain", "black"),
+           surv.plot.height = 0.75) 
+           
+
+svg(filename="tme_MSS_TP53neg_km_dfs_paper.svg", width=3, height=3)
+tme_MSS_TP53pos_km
+dev.off()
+
+DFSDSS_data$TME_subtype_cal = factor(DFSDSS_data$TME_subtype_cal, levels = c("Low", "High")) ###CHANGE LEVELS BACK
+```
+
+#high vs low for acrg EMT
+```{r}
+summary(coxph(Surv(DFS_time, DFS_status) ~ TME_subtype_cal, data = DFSDSS_data[DFSDSS_data$ACRG_subtype=="EMT",]))
+
+ggsurvplot(survfit(Surv(DFS_time, DFS_status) ~ TME_subtype_cal, data = DFSDSS_data[DFSDSS_data$ACRG_subtype=="EMT",]))
+
+DFSDSS_data$TME_subtype_cal = factor(DFSDSS_data$TME_subtype_cal, levels = c("High", "Low"))
+
+tme_emt_km = ggsurvplot(survfit(Surv(DFS_time, DFS_status) ~ TME_subtype_cal, data = DFSDSS_data[DFSDSS_data$ACRG_subtype=="EMT",]),
+           pval= "Logrank test \n p = 0.30", 
+           pval.coord = c(0.1, 0.2),
+           palette = c("#925E9FFF","#EFC000FF"),
+           break.time.by = 24,
+           xlab = "Time (months)",
+           ylab = "DFI Probability",
+           title = "ACRG EMT-TME Effect",
+           legend = "none",
+           legend.title = "Molecular subtype",
+           legend.labs=c("EMT, TME High", "EMT, TME Low"),
+           font.legend = c(12, "plain", "black"),
+           font.main = c(14, "plain", "black"),
+           surv.plot.height = 0.75) 
+           
+
+svg(filename="tme_emt_km_dfs_paper.svg", width=3, height=3)
+tme_emt_km
+dev.off()
+
+DFSDSS_data$TME_subtype_cal = factor(DFSDSS_data$TME_subtype_cal, levels = c("Low", "High")) ###CHANGE LEVELS BACK
+```
+
+#External validation TCGA/ACRG/TME
+```{r}
+#TCGA cox INTERNAL on TCGA
+TCGA_cox_rfs = coxph(Surv(DFS_time, DFS_status) ~ TCGA_subtype, data = DFSDSS_data[DFSDSS_data$study=="TCGA",])
+summary(TCGA_cox_rfs)
+summary(survfit(Surv(DFS_time, DFS_status) ~ TCGA_subtype, data = DFSDSS_data[DFSDSS_data$study=="TCGA",]), times = 60)
+pairwise_survdiff(Surv(DFS_time, DFS_status) ~ TCGA_subtype, data = DFSDSS_data[DFSDSS_data$study=="TCGA",])
+
+tcga_km_DFS_risk = ggsurvplot(survfit(Surv(DFS_time, DFS_status) ~ TCGA_subtype, data = DFSDSS_data[DFSDSS_data$study=="TCGA",]), 
+           risk.table=FALSE, 
+           risk.table.y.text = FALSE, 
+           pval= "Logrank test \n p = 0.9", 
+           pval.coord = c(80, 0.95),
+           palette = c("#F39B7FFF", "#91D1C2FF", "#4DBBD5FF", "#E64B35FF"),
+           risk.table.y.text.col = TRUE,
+           break.time.by = 24,
+           xlab = "Time (months)",
+           ylab = "DFI probability",
+           legend = c(0.25,0.24),
+           title = "TCGA Internal Validation",
+           legend.title = "TCGA Subtype",
+           legend.labs=c("CIN", "EBV", "GS", "MSI"),
+           font.legend = c(14, "plain", "black"),
+           font.main = c(16, "plain", "black"),
+           font.x = c(16, "plain"),
+           font.y = c(16, "plain"),
+           risk.table.fontsize = 5,
+           surv.plot.height = 0.7,
+           risk.table.height = 0.3)
+
+svg(filename="tcga_km_DFS_risk_internal.svg", width=4.6, height=4.6)
+tcga_km_DFS_risk
+dev.off()
+
+#TCGA cox EXTERNAL on TCGA
+TCGA_cox_rfs = coxph(Surv(DFS_time, DFS_status) ~ TCGA_subtype, data = DFSDSS_data[DFSDSS_data$study=="ACRG",])
+summary(TCGA_cox_rfs)
+summary(survfit(Surv(DFS_time, DFS_status) ~ TCGA_subtype, data = DFSDSS_data[DFSDSS_data$study=="ACRG",]), times = 60)
+pairwise_survdiff(Surv(DFS_time, DFS_status) ~ TCGA_subtype, data = DFSDSS_data[DFSDSS_data$study=="ACRG",])
+
+tcga_km_DFS_risk = ggsurvplot(survfit(Surv(DFS_time, DFS_status) ~ TCGA_subtype, data = DFSDSS_data[DFSDSS_data$study=="ACRG",]), 
+           risk.table=FALSE, 
+           risk.table.y.text = FALSE, 
+           pval= "Logrank test \n p = 0.07", 
+           pval.coord = c(65, 0.25),
+           palette = c("#F39B7FFF", "#91D1C2FF", "#4DBBD5FF", "#E64B35FF"),
+           risk.table.y.text.col = TRUE,
+           break.time.by = 24,
+           xlab = "Time (months)",
+           ylab = "DFI probability",
+           legend = c(0.25,0.24),
+           title = "TCGA External Validation",
+           legend.title = "TCGA Subtype",
+           legend.labs=c("CIN", "EBV", "GS", "MSI"),
+           font.legend = c(14, "plain", "black"),
+           font.main = c(16, "plain", "black"),
+           font.x = c(16, "plain"),
+           font.y = c(16, "plain"),
+           risk.table.fontsize = 5,
+           surv.plot.height = 0.7,
+           risk.table.height = 0.3)
+
+svg(filename="tcga_km_DFS_risk_external.svg", width=4.6, height=4.6)
+tcga_km_DFS_risk
+dev.off()
+
+
+
+#ACRG cox Internal on ACRG
+ACRG_cox_DFS = coxph(Surv(DFS_time, DFS_status) ~ ACRG_subtype, data = DFSDSS_data[DFSDSS_data$study=="ACRG",])
+summary(ACRG_cox_DFS)
+pairwise_survdiff(Surv(DFS_time, DFS_status) ~ ACRG_subtype, data = DFSDSS_data[DFSDSS_data$study=="ACRG",])
+
+acrg_km_DFS_risk = ggsurvplot(survfit(Surv(DFS_time, DFS_status) ~ ACRG_subtype, data = DFSDSS_data[DFSDSS_data$study=="ACRG",]), 
+           risk.table=FALSE, 
+           risk.table.y.text = FALSE, 
+           pval= "Logrank test \n p < 0.05", 
+           pval.coord = c(65, 0.17),
+           palette = c("#A6CEE3", "#3C5488FF", "#8491B4FF", "#33A02C"),
+           risk.table.y.text.col = TRUE,
+           break.time.by = 24,
+           xlab = "Time (months)",
+           ylab = "DFI probability",
+           title = "ACRG Internal Validation",
+           legend.title = "ACRG Subtype",
+           legend = c(0.33,0.20),
+           legend.labs=c("EMT", "MSI", "MSS TP53 Negative", "MSS TP53 Positive"),
+           font.legend = c(14, "plain", "black"),
+           font.main = c(16, "plain", "black"),
+           font.x = c(16, "plain"),
+           font.y = c(16, "plain"),
+           risk.table.fontsize = 5,
+           surv.plot.height = 0.7,
+           risk.table.height = 0.3)
+
+
+svg(filename="acrg_km_DFS_risk_internal.svg", width=4.6, height=4.6)
+acrg_km_DFS_risk
+dev.off()
+
+
+#ACRG cox External on TCGA
+ACRG_cox_DFS = coxph(Surv(DFS_time, DFS_status) ~ ACRG_subtype, data = DFSDSS_data[DFSDSS_data$study=="TCGA",])
+summary(ACRG_cox_DFS)
+pairwise_survdiff(Surv(DFS_time, DFS_status) ~ ACRG_subtype, data = DFSDSS_data[DFSDSS_data$study=="TCGA",])
+
+acrg_km_DFS_risk = ggsurvplot(survfit(Surv(DFS_time, DFS_status) ~ ACRG_subtype, data = DFSDSS_data[DFSDSS_data$study=="TCGA",]), 
+           risk.table=FALSE, 
+           risk.table.y.text = FALSE, 
+           pval= "Logrank test \n p = 0.3", 
+           pval.coord = c(80, 0.25),
+           palette = c("#A6CEE3", "#3C5488FF", "#8491B4FF", "#33A02C"),
+           risk.table.y.text.col = TRUE,
+           break.time.by = 24,
+           xlab = "Time (months)",
+           ylab = "DFI probability",
+           title = "ACRG External Validation",
+           legend.title = "ACRG Subtype",
+           legend = c(0.33,0.25),
+           legend.labs=c("EMT", "MSI", "MSS TP53 Negative", "MSS TP53 Positive"),
+           font.legend = c(14, "plain", "black"),
+           font.main = c(16, "plain", "black"),
+           font.x = c(16, "plain"),
+           font.y = c(16, "plain"),
+           risk.table.fontsize = 5,
+           surv.plot.height = 0.7,
+           risk.table.height = 0.3)
+
+
+svg(filename="acrg_km_DFS_risk_external.svg", width=4.6, height=4.6)
+acrg_km_DFS_risk
+dev.off()
+
+#TME cox Internal on ACRG
+DFSDSS_data$TME_subtype_cal = factor(DFSDSS_data$TME_subtype_cal, levels = c("Low", "High"))
+ 
+TME_cox_DFS = coxph(Surv(DFS_time, DFS_status) ~ TME_subtype_cal, data = DFSDSS_data[DFSDSS_data$study=="ACRG",])
+summary(TME_cox_DFS)
+
+tme_km_DFS_risk = ggsurvplot(survfit(Surv(DFS_time, DFS_status) ~ TME_subtype_cal, data = DFSDSS_data[DFSDSS_data$study=="ACRG",]), 
+           risk.table=FALSE, 
+           risk.table.y.text = FALSE, 
+           pval= "Logrank test \n p < 0.001", 
+           pval.coord = c(65,0.25),
+           palette = c("#EFC000FF","#925E9FFF"),
+           risk.table.y.text.col = TRUE,
+           break.time.by = 24,
+           xlab = "Time (months)",
+           ylab = "DFI probability",
+           title = "TME Internal Validation",
+           legend = c(0.25,0.25),
+           legend.title = "TME Subtype",
+           legend.labs=c("Low", "High"),
+           font.legend = c(14, "plain", "black"),
+           font.main = c(16, "plain", "black"),
+           font.x = c(16, "plain"),
+           font.y = c(16, "plain"),
+           risk.table.fontsize = 5,
+           surv.plot.height = 0.7,
+           risk.table.height = 0.3)
+
+svg(filename="tme_km_DFS_risk_internal.svg", width=4.6, height=4.6)
+tme_km_DFS_risk
+dev.off()
+
+
+#TME cox External on TCGA
+DFSDSS_data$TME_subtype_cal = factor(DFSDSS_data$TME_subtype_cal, levels = c("Low", "High"))
+ 
+TME_cox_DFS = coxph(Surv(DFS_time, DFS_status) ~ TME_subtype_cal, data = DFSDSS_data[DFSDSS_data$study=="TCGA",])
+summary(TME_cox_DFS)
+
+tme_km_DFS_risk = ggsurvplot(survfit(Surv(DFS_time, DFS_status) ~ TME_subtype_cal, data = DFSDSS_data[DFSDSS_data$study=="TCGA",]), 
+           risk.table=FALSE, 
+           risk.table.y.text = FALSE, 
+           pval= "Logrank test \n p < 0.05", 
+           pval.coord = c(80,0.25),
+           palette = c("#EFC000FF","#925E9FFF"),
+           risk.table.y.text.col = TRUE,
+           break.time.by = 24,
+           xlab = "Time (months)",
+           ylab = "DFI probability",
+           title = "TME External Validation",
+           legend = c(0.25,0.25),
+           legend.title = "TME Subtype",
+           legend.labs=c("Low", "High"),
+           font.legend = c(14, "plain", "black"),
+           font.main = c(16, "plain", "black"),
+           font.x = c(16, "plain"),
+           font.y = c(16, "plain"),
+           risk.table.fontsize = 5,
+           surv.plot.height = 0.7,
+           risk.table.height = 0.3)
+
+svg(filename="tme_km_DFS_risk_external.svg", width=4.6, height=4.6)
+tme_km_DFS_risk
+dev.off()
+
+```
+
+#Session Info 
+R version 4.3.1 (2023-06-16)
+Platform: aarch64-apple-darwin20 (64-bit)
+Running under: macOS 15.4.1
+
+Matrix products: default
+BLAS:   /System/Library/Frameworks/Accelerate.framework/Versions/A/Frameworks/vecLib.framework/Versions/A/libBLAS.dylib 
+LAPACK: /Library/Frameworks/R.framework/Versions/4.3-arm64/Resources/lib/libRlapack.dylib;  LAPACK version 3.11.0
+
+locale:
+[1] en_US.UTF-8/en_US.UTF-8/en_US.UTF-8/C/en_US.UTF-8/en_US.UTF-8
+
+time zone: America/Vancouver
+tzcode source: internal
+
+attached base packages:
+[1] grid      stats4    stats     graphics  grDevices utils     datasets  methods   base     
+
+other attached packages:
+ [1] ggmosaic_0.3.3        rstatix_0.7.2         tidyr_1.3.1           openxlsx_4.2.8        flextable_0.9.7       gtsummary_2.2.0      
+ [7] survey_4.4-2          Matrix_1.6-1.1        forestplot_3.1.6      abind_1.4-8           checkmate_2.3.2       RColorBrewer_1.1-3   
+[13] pheatmap_1.0.12       survminer_0.5.0       ggpubr_0.6.0          survival_3.8-3        Rmisc_1.5.1           plyr_1.8.9           
+[19] lattice_0.22-7        reshape2_1.4.4        MLmetrics_1.1.3       Metrics_0.1.4         mlr3filters_0.8.1     mlr_2.19.2           
+[25] ParamHelpers_1.14.2   remotes_2.5.0         measures_0.3          preprocessCore_1.64.0 stringr_1.5.1         annotate_1.80.0      
+[31] XML_3.99-0.18         AnnotationDbi_1.64.1  IRanges_2.36.0        S4Vectors_0.40.2      Biobase_2.62.0        BiocGenerics_0.48.1  
+[37] dplyr_1.1.4           devtools_2.4.5        usethis_3.1.0         ggplot2_3.5.2        
+
+loaded via a namespace (and not attached):
+  [1] splines_4.3.1           later_1.4.2             palmerpenguins_0.1.1    bitops_1.0-9            tibble_3.2.1            lifecycle_1.0.4        
+  [7] globals_0.17.0          backports_1.5.0         magrittr_2.0.3          plotly_4.10.4           rmarkdown_2.29          yaml_2.3.10            
+ [13] httpuv_1.6.16           zip_2.3.2               askpass_1.2.1           sessioninfo_1.2.3       pkgbuild_1.4.7          DBI_1.2.3              
+ [19] pkgload_1.4.0           zlibbioc_1.48.2         purrr_1.0.4             mlr3misc_0.16.0         RCurl_1.98-1.17         labelled_2.14.0        
+ [25] paradox_1.0.1           gdtools_0.4.2           GenomeInfoDbData_1.2.11 KMsurv_0.1-5            ggrepel_0.9.6           listenv_0.9.1          
+ [31] cards_0.6.0             cardx_0.2.4             parallelly_1.43.0       svglite_2.1.3           commonmark_1.9.5        codetools_0.2-20       
+ [37] ggtext_0.1.2            xml2_1.3.8              tidyselect_1.2.1        farver_2.1.2            broom.helpers_1.20.0    jsonlite_2.0.0         
+ [43] ellipsis_0.3.2          Formula_1.2-5           systemfonts_1.2.2       tools_4.3.1             ragg_1.4.0              Rcpp_1.0.14            
+ [49] glue_1.8.0              gridExtra_2.3           xfun_0.52               GenomeInfoDb_1.38.8     mlr3_0.23.0             withr_3.0.2            
+ [55] fastmap_1.2.0           mitools_2.4             openssl_2.3.2           litedown_0.7            digest_0.6.37           R6_2.6.1               
+ [61] mime_0.13               textshaping_1.0.0       colorspace_2.1-1        markdown_2.0            RSQLite_2.3.9           generics_0.1.3         
+ [67] fontLiberation_0.1.0    data.table_1.17.0       httr_1.4.7              htmlwidgets_1.6.4       pkgconfig_2.0.3         gtable_0.3.6           
+ [73] blob_1.2.4              XVector_0.42.0          survMisc_0.5.6          htmltools_0.5.8.1       fontBitstreamVera_0.1.1 carData_3.0-5          
+ [79] profvis_0.4.0           scales_1.3.0            parallelMap_1.5.1       png_0.1-8               lgr_0.4.4               knitr_1.50             
+ [85] km.ci_0.5-6             rstudioapi_0.17.1       uuid_1.2-1              cachem_1.1.0            zoo_1.8-14              parallel_4.3.1         
+ [91] miniUI_0.1.2            vipor_0.4.7             pillar_1.10.2           vctrs_0.6.5             urlchecker_1.0.1        promises_1.3.2         
+ [97] car_3.1-3               xtable_1.8-4            beeswarm_0.4.0          evaluate_1.0.3          BBmisc_1.13             cli_3.6.4              
+[103] compiler_4.3.1          rlang_1.1.6             crayon_1.5.3            ggsignif_0.6.4          labeling_0.4.3          forcats_1.0.0          
+[109] fs_1.6.6                ggbeeswarm_0.7.2        stringi_1.8.7           viridisLite_0.4.2       munsell_0.5.1           Biostrings_2.70.3      
+[115] productplots_0.1.1      lazyeval_0.2.2          fontquiver_0.2.1        hms_1.1.3               bit64_4.6.0-1           future_1.40.0          
+[121] KEGGREST_1.42.0         shiny_1.10.0            haven_2.5.4             gridtext_0.1.5          broom_1.0.8             memoise_2.0.1          
+[127] fastmatch_1.1-6         bit_4.6.0               officer_0.6.8     
+
+
